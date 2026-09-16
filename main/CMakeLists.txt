@@ -29,7 +29,7 @@ idf_component_register(
         esp_http_server
         esp_timer
         driver
-        json
+        esp_driver_i2s
         # Project components (../components/*)
         config_store
         audio_pipeline

@@ -40,6 +40,8 @@ static const char* TAG = "CODEC";
 #define ES8388_DACCONTROL26 0x30   // LOUT2 volume
 #define ES8388_DACCONTROL27 0x31   // ROUT2 volume
 
+static uint8_t es8388_addr = ES8388_ADDR;
+
 static esp_err_t i2c_master_init(void) {
     hardware_settings_t hw;
     config_manager_load_hw(&hw);
@@ -56,12 +58,16 @@ static esp_err_t i2c_master_init(void) {
     };
     esp_err_t err = i2c_param_config(I2C_MASTER_NUM, &conf);
     if (err != ESP_OK) return err;
-    return i2c_driver_install(I2C_MASTER_NUM, conf.mode, 0, 0, 0);
+    err = i2c_driver_install(I2C_MASTER_NUM, conf.mode, 0, 0, 0);
+    if (err == ESP_ERR_INVALID_STATE) {
+        return ESP_OK;
+    }
+    return err;
 }
 
 static esp_err_t es_write(uint8_t reg, uint8_t data) {
     uint8_t buf[2] = { reg, data };
-    return i2c_master_write_to_device(I2C_MASTER_NUM, ES8388_ADDR, buf, sizeof(buf), pdMS_TO_TICKS(100));
+    return i2c_master_write_to_device(I2C_MASTER_NUM, es8388_addr, buf, sizeof(buf), pdMS_TO_TICKS(100));
 }
 
 esp_err_t codec_init(void) {
@@ -71,6 +77,21 @@ esp_err_t codec_init(void) {
         ESP_LOGE(TAG, "I2C master init failed: %d", ret);
         return ret;
     }
+
+    uint8_t probe = 0;
+    ret = i2c_master_write_read_device(I2C_MASTER_NUM, ES8388_ADDR, &probe, 0, &probe, 1, pdMS_TO_TICKS(100));
+    if (ret != ESP_OK) {
+        ret = i2c_master_write_read_device(I2C_MASTER_NUM, 0x11, &probe, 0, &probe, 1, pdMS_TO_TICKS(100));
+        if (ret == ESP_OK) {
+            es8388_addr = 0x11;
+        }
+    }
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "ES8388 not responding at 0x10 or 0x11 (err %s)", esp_err_to_name(ret));
+        i2c_driver_delete(I2C_MASTER_NUM);
+        return ret;
+    }
+    ESP_LOGI(TAG, "ES8388 responded at 0x%02X", es8388_addr);
 
     // Standard ES8388 bring-up sequence (line-in mic -> ADC, DAC -> HP/line out).
     // Mirrors the widely-used ESP-ADF / AI-Thinker reference configuration.
@@ -102,7 +123,7 @@ esp_err_t codec_init(void) {
     ret |= es_write(ES8388_DACCONTROL27, 0x1E);
 
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "ES8388 init sequence failed (check wiring / I2C address)");
+        ESP_LOGE(TAG, "ES8388 init sequence failed: %s", esp_err_to_name(ret));
         i2c_driver_delete(I2C_MASTER_NUM);
         return ESP_FAIL;
     }

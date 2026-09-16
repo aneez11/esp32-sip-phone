@@ -25,7 +25,7 @@
 #define SIP_USER               "1000"
 #define SIP_PASSWORD           "your_sip_password"
 #define SIP_DISPLAY_NAME       "ESP32 Phone"
-#define SIP_DOMAIN             SIP_SERVER_IP
+#define SIP_DOMAIN             ""         // realm/domain; empty = use SIP_SERVER_IP
 #define SIP_LOCAL_PORT         5060
 #define SIP_REGISTRATION_EXPIRY 3600
 #define SIP_RETRY_INTERVAL_MS  5000
@@ -33,7 +33,7 @@
 #define SIP_TARGET_URI         "sip:1001@192.168.1.100" // Default call target
 
 // --- AI & Voice Activation ---
-#define USE_WAKE_WORD          1          // esp-sr WakeNet (needs PSRAM / S3)
+#define USE_WAKE_WORD          0          // 4 MB board: wake word disabled to avoid the 8 MB model partition
 // Keyword must match a WakeNet model flashed into the `model` partition and
 // selectable via `idf.py menuconfig` (ESP Speech Recognition). Free options
 // include "computer", "hiesp", "hilexin", "alexa".
@@ -190,10 +190,13 @@
 #define NTP_SERVER             "pool.ntp.org"
 #define TIMEZONE               "GMT0"   // POSIX TZ, e.g. "MSK-3", "GMT0", "EST5EDT,M3.2.0,M11.1.0"
 
-// --- Web interface security ---
-// Empty string disables the gate (LAN-only use). Set a PIN to require it on
-// every state-changing endpoint (/call, /answer, /hangup, /setup, /hardware...).
-#define WEB_UI_PIN             ""
+// --- Web interface login ---
+// The web interface always starts with a login page ("/login"); every page
+// behind it requires a valid session cookie. These are the factory defaults,
+// they are overridable at runtime from the web "Settings" page (NVS).
+#define WEB_UI_USER            "admin"
+#define WEB_UI_PASSWORD        "esp32sip"
+#define WEB_SESSION_TIMEOUT_S  28800    // 8 h session lifetime (sliding)
 
 // --- Shared application event-group bits ---
 // (Defined centrally so wifi_manager, sip_client and main agree on them.

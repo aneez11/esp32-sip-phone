@@ -17,6 +17,7 @@ This project provides a robust, production-ready foundation for VoIP intercommun
 * **Graphical User Interface (LVGL)**: Full Touchscreen support (ST7789/ILI9341 via SPI) and touch controllers (e.g., XPT2046) using the industry-standard LVGL library. Includes a visual dialer, active call screen, and incoming call alerts.
 * **Edge AI Voice Activation (Wake Word)**: Integrated `esp-sr` WakeNet! The intercom constantly listens locally for a Wake Word (e.g., "Computer") to initiate a SIP call without physical interaction or cloud connectivity.
 * **PC Simulator**: Develop and test the LVGL User Interface directly on your Windows/Mac/Linux PC using the included SDL2 Simulator, without needing to flash the ESP32!
+* **Password-Protected Web UI**: Everything sits behind a **login page** (default `admin` / `esp32sip`, changeable in NVS). The in-device **Settings** page manages the **SIP server, port, domain, auth username/password, display name and default call target** as well as the Wi-Fi and web-login credentials — SIP/login changes are applied **without rebooting** (only Wi-Fi and GPIO changes restart the device).
 * **Hardware & Web Control**:
   * **Dynamic Hardware Config:** Change I2S, I2C, and SPI GPIO pins directly through the web interface without recompiling the firmware!
   * Captive Portal for Wi-Fi and SIP credentials setup.
@@ -56,8 +57,28 @@ While this project is designed to be highly portable across ESP-IDF versions and
 
 The project includes a built-in lightweight HTTP server for configuration and call management.
 
+### Login
+The first page you see is always the login page. The factory credentials are:
+
+| Username | Password |
+|:---:|:---:|
+| `admin` | `esp32sip` |
+
+They live in `WEB_UI_USER` / `WEB_UI_PASSWORD` (`components/config_store/app_config.h`) and can be changed at runtime on the **Settings** page. Signing in issues an `ESPAUTH` session cookie (8 h, sliding); **Logout** drops it. Unauthenticated requests are redirected to `/login`.
+
+> **Change the factory password as soon as the device is on your own network.** While the device is still in setup mode it broadcasts an *open* access point, so anyone in radio range can reach the login page. For that reason the web credentials can only be changed in normal (station) mode — the *Web access* section is hidden in setup mode. After 5 failed logins the login endpoint is locked for 30 s (tracked with timestamps, so the delay never blocks the web server).
+
+### Settings (SIP account management)
+`/setup` → the *Settings* page is reachable both in normal (station) mode and from the captive portal, and covers:
+
+* **Wi-Fi** — SSID + password (changing these restarts the device).
+* **SIP account** — server (IP or domain), port, domain/realm, **auth username**, **auth password**, display name and default call target. Saving re-registers the account **immediately, without a reboot**; if a call is in progress the new account is applied once the line goes idle, and a server name that cannot be resolved is retried with exponential backoff (5 s → 60 s).
+* **Web access** — the login username/password for this web interface (normal mode only, see above).
+
+Only genuinely changed fields count as a change: saving a form whose values are unchanged reports *Nothing to save* and never restarts the device. Values that do not fit their field (e.g. a password longer than 63 characters, an SSID longer than 31) are rejected instead of being silently truncated, so a saved credential always matches what was typed. On the *Hardware* page a blank pin field means "leave unchanged".
+
 ### Captive Portal (Initial Setup)
-When Wi-Fi or SIP credentials are missing, the ESP32 hosts an AP (ESP-SIP-Setup). Connect to it and navigate to 192.168.4.1 to enter your credentials.
+When Wi-Fi or SIP credentials are missing, the ESP32 hosts an AP (ESP-SIP-Setup). Connect to it and navigate to 192.168.4.1, sign in, and enter your credentials.
 ![Captive Portal Setup](assets/esp32-sip-phone-setup.jpg)
 
 ### Call Control Interface & UI Themes
@@ -92,7 +113,7 @@ ESP32-SIP-Voice/
 │   ├── audio_pipeline.c     # I2S task, codec dispatch, AEC, dynamic sample-rate switch
 │   ├── g711_codec.c         # G.711 µ-law / A-law companding
 │   ├── codec_driver.c       # ES8388 (I2C) / INMP441+MAX98357A codec control
-│   ├── ui_controller.c      # HTTP server (setup, call control, phonebook) + buttons
+│   ├── ui_controller.c      # Web UI: login, settings, call control, phonebook, HW config
 │   ├── display.c            # OLED (SSD1306) status display
 │   ├── Kconfig.projbuild    # LITE / STANDARD / PRO tier selection
 │   └── idf_component.yml
@@ -114,7 +135,7 @@ ESP32-SIP-Voice/
 
 1. **Prerequisites**: Ensure you have [ESP-IDF v4.4 or later](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/) installed.
 2. **Pick a tier** (memory profile) with `idf.py menuconfig` → *ESP32 SIP Voice Configuration* → LITE / STANDARD / PRO. This selects the codec set (G.711 / +G.722 / +OPUS+AEC+WakeNet).
-3. **Configure credentials** — easiest at runtime: flash, connect to the **`ESP-SIP-Setup`** Wi-Fi AP, open `192.168.4.1`, and enter Wi-Fi/SIP details (stored in NVS). Compile-time fallbacks live in `main/app_config.h` (`WIFI_*`, `SIP_*`, pinout, `USE_CODEC_*`, `CTRL_METHOD_*`, optional `WEB_UI_PIN`). GPIO pins are also editable from the web *HW Config* page.
+3. **Configure credentials** — easiest at runtime: flash, connect to the **`ESP-SIP-Setup`** Wi-Fi AP, open `192.168.4.1`, sign in (`admin` / `esp32sip` by default) and enter the Wi-Fi + SIP details on the *Settings* page (stored in NVS). Compile-time fallbacks live in `components/config_store/app_config.h` (`WIFI_*`, `SIP_*`, `WEB_UI_USER` / `WEB_UI_PASSWORD`, pinout, `USE_CODEC_*`, `CTRL_METHOD_*`). GPIO pins are editable from the web *Hardware* page, and the SIP account from the *Settings* page.
 4. **Build & flash**:
    ```bash
    idf.py set-target esp32        # or esp32s3 / esp32c3
@@ -154,6 +175,12 @@ Windows / macOS / Linux.
 *   **Power Optimization:** Exploring ESP32 Deep Sleep and Wi-Fi Light Sleep modes to reduce power consumption while maintaining SIP registration for battery-powered intercoms.
 
 ## Version History
+* **v2.4.0** - **Web login & in-device SIP account management.**
+  * The web interface now starts on a **login page** (`/login`); every page is gated behind an `ESPAUTH` session cookie (8 h sliding, `HttpOnly`/`SameSite=Lax`), with `/logout` to end the session. The old optional HTTP Basic `WEB_UI_PIN` gate is replaced by real login credentials (`WEB_UI_USER` / `WEB_UI_PASSWORD`, editable from the web UI).
+  * New **Settings** page (`/setup`) available in station mode as well as the captive portal: Wi-Fi, **SIP server, port, domain/realm, auth username, auth password**, display name, default call target, and the web login credentials.
+  * **No reboot for SIP/login changes.** `sip_client_reload()` re-resolves the server, drops the old binding (`REGISTER` with `Expires: 0`), re-arms the registration timer and re-registers with the new account from the SIP task. Only Wi-Fi and GPIO/theme changes still restart the device.
+  * Web UI refreshed: shared glass theme, navigation bar, responsive layout, escaped output, and a rewritten `Hardware` page exposing all pins (incl. SPI/TFT/touch) plus the theme selector.
+  * Hardening after review: login throttled with a timestamp-based lockout (5 failures → 30 s, no blocking sleep in the HTTP task); unchanged fields no longer count as changes (so a SIP-only save really does skip the reboot); over-length values are rejected instead of truncated; web credentials are not editable from the open setup AP; blank hardware pin fields are ignored; and a failed server lookup during reload backs off exponentially instead of polling DNS once a second.
 * **v2.3.0** - **Buildable & CI-Verified Release.** The firmware now compiles cleanly end-to-end and is build-checked automatically on every push/PR (GitHub Actions). The CI matrix builds the firmware for **ESP32** and **ESP32-S3** with ESP-IDF v5.1, plus the **SDL PC simulator** — all green.
   * Added a GitHub Actions workflow (`.github/workflows/build.yml`) that compiles firmware (esp32 / esp32s3) and the LVGL simulator.
   * Fixed the component requirement name `esp_tls` → `esp-tls`.

@@ -1,13 +1,13 @@
 # ===== ESP32-SIP-Voice default project configuration =====
 # Override per-board with `idf.py menuconfig`.
 
-# Custom partition table (factory app + WakeNet model partition)
+# Custom partition table for a 4 MB ESP32 board without the WakeNet model partition.
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
-# 8 MB flash assumed (needed for the WakeNet model partition). Drop to your
-# board's size if you disable wake word.
-CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+# This board has 4 MB flash installed; wake word is disabled to avoid the
+# 8 MB model partition requirement.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 
 # 1 kHz tick -> accurate 20 ms audio framing (pdMS_TO_TICKS(20) == 20 ticks).
 CONFIG_FREERTOS_HZ=1000

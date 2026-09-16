@@ -35,11 +35,15 @@ typedef enum {
 // Function Prototypes
 sip_client_handle_t sip_client_init(EventGroupHandle_t app_event_group, EventBits_t registered_event_bit, audio_pipeline_handle_t audio_handle, app_settings_t *settings);
 esp_err_t sip_client_start_registration(sip_client_handle_t handle);
+esp_err_t sip_client_reload(sip_client_handle_t handle); // re-read app_settings_t at runtime (no reboot)
 esp_err_t sip_client_initiate_call(sip_client_handle_t handle, const char* target_uri);
 esp_err_t sip_client_answer_call(sip_client_handle_t handle);
 esp_err_t sip_client_terminate_call(sip_client_handle_t handle); // Hang up active/incoming call
 esp_err_t sip_client_register_callbacks(sip_client_handle_t handle, const sip_callbacks_t* callbacks);
 sip_call_state_t sip_client_get_call_state(sip_client_handle_t handle);
+// Remote party of the current call (caller URI / dialled target). Fills buf and
+// returns ESP_ERR_INVALID_STATE when there is no call in progress.
+esp_err_t sip_client_get_remote_uri(sip_client_handle_t handle, char *buf, size_t buf_len);
 esp_err_t sip_client_get_remote_rtp_info(sip_client_handle_t handle, ip_addr_t* remote_ip, uint16_t* remote_port);
 uint16_t sip_client_get_local_rtp_port(sip_client_handle_t handle); // Function needed by audio pipeline
 int sip_client_get_negotiated_pt(sip_client_handle_t handle);       // Negotiated RTP payload type, -1 if none

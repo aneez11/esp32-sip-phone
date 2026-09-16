@@ -6,9 +6,17 @@
 typedef struct {
     char wifi_ssid[32];
     char wifi_password[64];
-    char sip_server[32];
-    char sip_user[32];
+    char sip_server[64];
+    char sip_user[64];
     char sip_password[64];
+
+    // Extended settings (managed from the web "Settings" page).
+    uint16_t sip_port;               // 0 -> SIP_SERVER_PORT
+    char sip_domain[64];             // empty -> sip_server
+    char sip_display_name[32];       // empty -> SIP_DISPLAY_NAME
+    char sip_target[64];             // default call target; empty -> SIP_TARGET_URI
+    char web_user[32];               // web login username
+    char web_password[64];           // web login password
 } app_settings_t;
 
 typedef struct {

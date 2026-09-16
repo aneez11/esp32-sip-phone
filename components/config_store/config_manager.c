@@ -3,6 +3,7 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_log.h"
+#include <stdio.h>
 #include <string.h>
 
 static const char *TAG = "CONFIG";
@@ -18,30 +19,57 @@ esp_err_t config_manager_init(void) {
     return err;
 }
 
+// Fill every field with its compile-time fallback from app_config.h.
+static void apply_defaults(app_settings_t *settings) {
+    memset(settings, 0, sizeof(*settings));
+    snprintf(settings->wifi_ssid, sizeof(settings->wifi_ssid), "%s", WIFI_SSID);
+    snprintf(settings->wifi_password, sizeof(settings->wifi_password), "%s", WIFI_PASSWORD);
+    snprintf(settings->sip_server, sizeof(settings->sip_server), "%s", SIP_SERVER_IP);
+    snprintf(settings->sip_user, sizeof(settings->sip_user), "%s", SIP_USER);
+    snprintf(settings->sip_password, sizeof(settings->sip_password), "%s", SIP_PASSWORD);
+    settings->sip_port = SIP_SERVER_PORT;
+    // SIP_DOMAIN is empty by default: an empty domain means "use the SIP server
+    // as the realm/domain" (sip_client falls back to sip_server). Seeding a
+    // literal here would override that fallback on devices that already have a
+    // stored sip_server but no stored sip_domain.
+    snprintf(settings->sip_domain, sizeof(settings->sip_domain), "%s", SIP_DOMAIN);
+    snprintf(settings->sip_display_name, sizeof(settings->sip_display_name), "%s", SIP_DISPLAY_NAME);
+    snprintf(settings->sip_target, sizeof(settings->sip_target), "%s", SIP_TARGET_URI);
+    snprintf(settings->web_user, sizeof(settings->web_user), "%s", WEB_UI_USER);
+    snprintf(settings->web_password, sizeof(settings->web_password), "%s", WEB_UI_PASSWORD);
+}
+
+// Read a string key; keep the (already applied) default when it is absent.
+static void get_str_or_keep(nvs_handle_t h, const char *key, char *dst, size_t dst_size) {
+    size_t len = dst_size;
+    nvs_get_str(h, key, dst, &len);
+}
+
 esp_err_t config_manager_load(app_settings_t *settings) {
+    apply_defaults(settings);
+
     nvs_handle_t my_handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &my_handle);
     if (err != ESP_OK) {
-        ESP_LOGI(TAG, "NVS not found, using defaults");
-        // Apply defaults from app_config.h
-        strncpy(settings->wifi_ssid, WIFI_SSID, sizeof(settings->wifi_ssid));
-        strncpy(settings->wifi_password, WIFI_PASSWORD, sizeof(settings->wifi_password));
-        strncpy(settings->sip_server, SIP_SERVER_IP, sizeof(settings->sip_server));
-        strncpy(settings->sip_user, SIP_USER, sizeof(settings->sip_user));
-        strncpy(settings->sip_password, SIP_PASSWORD, sizeof(settings->sip_password));
+        ESP_LOGI(TAG, "NVS not found, using compile-time defaults");
         return ESP_OK; // Return OK with defaults
     }
 
-    size_t len = sizeof(settings->wifi_ssid);
-    nvs_get_str(my_handle, "wifi_ssid", settings->wifi_ssid, &len);
-    len = sizeof(settings->wifi_password);
-    nvs_get_str(my_handle, "wifi_pass", settings->wifi_password, &len);
-    len = sizeof(settings->sip_server);
-    nvs_get_str(my_handle, "sip_server", settings->sip_server, &len);
-    len = sizeof(settings->sip_user);
-    nvs_get_str(my_handle, "sip_user", settings->sip_user, &len);
-    len = sizeof(settings->sip_password);
-    nvs_get_str(my_handle, "sip_pass", settings->sip_password, &len);
+    get_str_or_keep(my_handle, "wifi_ssid",  settings->wifi_ssid,   sizeof(settings->wifi_ssid));
+    get_str_or_keep(my_handle, "wifi_pass",  settings->wifi_password, sizeof(settings->wifi_password));
+    get_str_or_keep(my_handle, "sip_server", settings->sip_server,  sizeof(settings->sip_server));
+    get_str_or_keep(my_handle, "sip_user",   settings->sip_user,    sizeof(settings->sip_user));
+    get_str_or_keep(my_handle, "sip_pass",   settings->sip_password, sizeof(settings->sip_password));
+    get_str_or_keep(my_handle, "sip_domain", settings->sip_domain,  sizeof(settings->sip_domain));
+    get_str_or_keep(my_handle, "sip_name",   settings->sip_display_name, sizeof(settings->sip_display_name));
+    get_str_or_keep(my_handle, "sip_target", settings->sip_target,  sizeof(settings->sip_target));
+    get_str_or_keep(my_handle, "web_user",   settings->web_user,    sizeof(settings->web_user));
+    get_str_or_keep(my_handle, "web_pass",   settings->web_password, sizeof(settings->web_password));
+
+    uint16_t port = 0;
+    if (nvs_get_u16(my_handle, "sip_port", &port) == ESP_OK && port != 0) {
+        settings->sip_port = port;
+    }
 
     nvs_close(my_handle);
     ESP_LOGI(TAG, "Settings loaded from NVS");
@@ -58,6 +86,12 @@ esp_err_t config_manager_save(const app_settings_t *settings) {
     nvs_set_str(my_handle, "sip_server", settings->sip_server);
     nvs_set_str(my_handle, "sip_user", settings->sip_user);
     nvs_set_str(my_handle, "sip_pass", settings->sip_password);
+    nvs_set_str(my_handle, "sip_domain", settings->sip_domain);
+    nvs_set_str(my_handle, "sip_name", settings->sip_display_name);
+    nvs_set_str(my_handle, "sip_target", settings->sip_target);
+    nvs_set_str(my_handle, "web_user", settings->web_user);
+    nvs_set_str(my_handle, "web_pass", settings->web_password);
+    nvs_set_u16(my_handle, "sip_port", settings->sip_port);
 
     err = nvs_commit(my_handle);
     nvs_close(my_handle);

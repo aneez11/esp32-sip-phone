@@ -2,104 +2,95 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ESP32 SIP Setup</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Settings - ESP32 SIP</title>
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap');
-body {
-    margin: 0;
-    padding: 0;
-    font-family: 'Inter', sans-serif;
-    background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
-    height: 100vh;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    color: #fff;
-}
-.card {
-    background: rgba(255, 255, 255, 0.1);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-    border-radius: 16px;
-    padding: 40px;
-    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    width: 100%;
-    max-width: 320px;
-    animation: fadeIn 0.8s ease-out;
-}
-@keyframes fadeIn {
-    from { opacity: 0; transform: translateY(-20px); }
-    to { opacity: 1; transform: translateY(0); }
-}
-h1 {
-    text-align: center;
-    margin-top: 0;
-    font-size: 24px;
-    font-weight: 600;
-    letter-spacing: 1px;
-}
-.form-group {
-    margin-bottom: 16px;
-}
-label {
-    display: block;
-    font-size: 13px;
-    margin-bottom: 6px;
-    color: #ccc;
-}
-input[type="text"], input[type="password"] {
-    width: 100%;
-    padding: 10px;
-    border: none;
-    border-radius: 8px;
-    background: rgba(255, 255, 255, 0.05);
-    color: #fff;
-    font-size: 15px;
-    box-sizing: border-box;
-    transition: all 0.3s;
-    border: 1px solid rgba(255,255,255,0.1);
-}
-input:focus {
-    outline: none;
-    background: rgba(255, 255, 255, 0.15);
-    border-color: #00d2ff;
-    box-shadow: 0 0 10px rgba(0, 210, 255, 0.5);
-}
-.btn {
-    width: 100%;
-    padding: 14px;
-    background: linear-gradient(90deg, #00d2ff 0%, #3a7bd5 100%);
-    border: none;
-    border-radius: 8px;
-    color: white;
-    font-size: 16px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: transform 0.2s, box-shadow 0.2s;
-    margin-top: 10px;
-}
-.btn:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 5px 15px rgba(0, 210, 255, 0.4);
-}
-.btn:active {
-    transform: translateY(0);
-}
+:root{color-scheme:dark;}
+*{box-sizing:border-box;}
+body{margin:0;min-height:100vh;font-family:"Segoe UI",system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;
+color:#eaf4fb;background:linear-gradient(135deg,#0f2027,#203a43,#2c5364);display:flex;justify-content:center;padding:18px;}
+.wrap{width:100%;max-width:440px;}
+.card{background:rgba(255,255,255,.08);backdrop-filter:blur(12px);
+border:1px solid rgba(255,255,255,.15);border-radius:16px;padding:22px;
+box-shadow:0 8px 32px rgba(0,0,0,.35);margin-bottom:14px;}
+h1{font-size:22px;margin:0 0 4px;letter-spacing:.3px;}
+h2{font-size:14px;text-transform:uppercase;letter-spacing:1px;color:#8fd6ef;margin:0 0 10px;}
+.sub{font-size:13px;color:#9fb3c6;margin:0 0 16px;line-height:1.45;}
+label{display:block;font-size:12px;letter-spacing:.4px;text-transform:uppercase;color:#a8bccd;margin:12px 0 5px;}
+input,select{width:100%;padding:11px;border-radius:9px;font-size:15px;
+border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06);color:#fff;}
+input::placeholder{color:#7d90a3;}
+input:focus,select:focus{outline:none;border-color:#00d2ff;box-shadow:0 0 10px rgba(0,210,255,.45);}
+.btn{display:block;width:100%;padding:13px;margin-top:14px;border:0;border-radius:10px;
+color:#fff;font-size:15px;font-weight:600;cursor:pointer;background:linear-gradient(90deg,#00d2ff,#3a7bd5);}
+.btn:hover{filter:brightness(1.1);}
+.nav{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-bottom:14px;}
+.nav a{color:#cfe9f5;text-decoration:none;font-size:13px;padding:7px 12px;
+border-radius:999px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);}
+.nav a.on{background:linear-gradient(90deg,#00d2ff,#3a7bd5);border-color:transparent;color:#04121c;font-weight:700;}
+.info{background:rgba(0,210,255,.12);border:1px solid rgba(0,210,255,.5);
+border-radius:9px;padding:10px 12px;font-size:13px;margin-bottom:12px;}
+.row{display:flex;gap:10px;}.row>div{flex:1;}
 </style>
 </head>
 <body>
-<div class="card">
-    <h1>ESP32 SIP Setup</h1>
-    <form method="POST" action="/setup">
-        <div class="form-group"><label>WiFi SSID</label><input type="text" name="ssid" value="MyHomeNetwork"></div>
-        <div class="form-group"><label>WiFi Password</label><input type="password" name="pass" value="12345678"></div>
-        <div class="form-group"><label>SIP Server IP/Domain</label><input type="text" name="sip_server" value="sip.antisip.com"></div>
-        <div class="form-group"><label>SIP Username</label><input type="text" name="sip_user" value="doorbell_1"></div>
-        <div class="form-group"><label>SIP Password</label><input type="password" name="sip_pass" value="secret"></div>
-        <button type="submit" class="btn">Save & Restart</button>
-    </form>
+<div class="wrap">
+    <!-- Rendered by setup_get_handler() in main/ui_controller.c -->
+    <nav class="nav">
+        <a href="/">Call</a>
+        <a href="/phonebook">Phonebook</a>
+        <a href="/setup" class="on">Settings</a>
+        <a href="/hardware">Hardware</a>
+        <a href="/logout">Logout</a>
+    </nav>
+
+    <div class="card">
+        <h1>Settings</h1>
+        <p class="sub">Leave a password field empty to keep the stored value. SIP and login changes
+        apply immediately (no restart); only Wi-Fi changes restart the device.</p>
+
+        <!-- shown in AP / captive-portal mode -->
+        <div class="info">Setup mode: the device is not connected to Wi-Fi yet. Enter your Wi-Fi and
+        SIP account below.</div>
+
+        <form method="POST" action="/setup">
+            <h2>Wi-Fi</h2>
+            <label>Network name (SSID)</label>
+            <input type="text" name="ssid" value="MyHomeNetwork" placeholder="Your Wi-Fi SSID">
+            <label>Wi-Fi password</label>
+            <input type="password" name="wifi_pass" placeholder="Leave empty to keep current">
+
+            <h2 style="margin-top:22px">SIP account</h2>
+            <label>SIP server (IP or domain)</label>
+            <input type="text" name="sip_server" value="sip.antisip.com" placeholder="sip.provider.com">
+            <div class="row">
+                <div>
+                    <label>SIP port</label>
+                    <input type="number" name="sip_port" min="1" max="65535" value="5060">
+                </div>
+                <div>
+                    <label>Domain / realm</label>
+                    <input type="text" name="sip_domain" value="sip.antisip.com" placeholder="Defaults to server">
+                </div>
+            </div>
+            <label>Auth username</label>
+            <input type="text" name="sip_user" value="doorbell_1" placeholder="1000">
+            <label>Auth password</label>
+            <input type="password" name="sip_pass" placeholder="Leave empty to keep current">
+            <label>Display name</label>
+            <input type="text" name="display_name" value="Front Door" placeholder="ESP32 Phone">
+            <label>Default call target</label>
+            <input type="text" name="sip_target" value="sip:1001@sip.antisip.com" placeholder="sip:1001@192.168.1.100">
+
+            <h2 style="margin-top:22px">Web access</h2>
+            <label>Login username</label>
+            <input type="text" name="web_user" value="admin" placeholder="admin">
+            <label>Login password</label>
+            <input type="password" name="web_pass" placeholder="Leave empty to keep current">
+
+            <button class="btn" type="submit">Save &amp; restart</button>
+        </form>
+    </div>
 </div>
 </body>
 </html>

@@ -2,49 +2,59 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ESP32 SIP Phone</title>
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap');
-body {
-    margin: 0; font-family: 'Inter', sans-serif;
-    background: linear-gradient(135deg, #141e30, #243b55);
-    height: 100vh; display: flex; justify-content: center; align-items: center; color: #fff;
-}
-.card {
-    background: rgba(255,255,255,0.05); backdrop-filter: blur(15px); -webkit-backdrop-filter: blur(15px);
-    border-radius: 20px; padding: 40px; text-align: center;
-    box-shadow: 0 10px 30px rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.1);
-    width: 100%; max-width: 320px;
-    animation: fadeIn 0.8s ease-out;
-}
-@keyframes fadeIn {
-    from { opacity: 0; transform: translateY(-20px); }
-    to { opacity: 1; transform: translateY(0); }
-}
-h1 { margin-top: 0; font-size: 26px; }
-.status {
-    font-size: 18px; margin-bottom: 30px; color: #00d2ff; font-weight: 600;
-}
-.btn {
-    width: 100%; padding: 15px; margin-bottom: 15px; border: none; border-radius: 10px;
-    color: white; font-size: 16px; font-weight: 600; cursor: pointer;
-    transition: transform 0.2s, filter 0.2s, box-shadow 0.2s;
-}
-.btn:hover { transform: translateY(-2px); filter: brightness(1.1); box-shadow: 0 5px 15px rgba(0,0,0,0.3); }
-.btn:active { transform: translateY(0); }
-.btn-call { background: linear-gradient(90deg, #11998e, #38ef7d); }
-.btn-answer { background: linear-gradient(90deg, #2193b0, #6dd5ed); }
-.btn-hangup { background: linear-gradient(90deg, #cb2d3e, #ef473a); }
+:root{color-scheme:dark;}
+*{box-sizing:border-box;}
+body{margin:0;min-height:100vh;font-family:"Segoe UI",system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;
+color:#eaf4fb;background:linear-gradient(135deg,#0f2027,#203a43,#2c5364);display:flex;justify-content:center;padding:18px;}
+.wrap{width:100%;max-width:440px;}
+.card{background:rgba(255,255,255,.08);backdrop-filter:blur(12px);
+border:1px solid rgba(255,255,255,.15);border-radius:16px;padding:22px;
+box-shadow:0 8px 32px rgba(0,0,0,.35);margin-bottom:14px;}
+h1{font-size:22px;margin:0 0 4px;letter-spacing:.3px;}
+.sub{font-size:13px;color:#9fb3c6;margin:0 0 16px;line-height:1.45;}
+.btn{display:block;width:100%;padding:13px;margin-top:14px;border:0;border-radius:10px;
+color:#fff;font-size:15px;font-weight:600;cursor:pointer;background:linear-gradient(90deg,#00d2ff,#3a7bd5);}
+.btn:hover{filter:brightness(1.1);}
+.btn.call{background:linear-gradient(90deg,#11998e,#38ef7d);}
+.btn.answer{background:linear-gradient(90deg,#2193b0,#6dd5ed);}
+.btn.hangup{background:linear-gradient(90deg,#cb2d3e,#ef473a);}
+.nav{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-bottom:14px;}
+.nav a{color:#cfe9f5;text-decoration:none;font-size:13px;padding:7px 12px;
+border-radius:999px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);}
+.nav a.on{background:linear-gradient(90deg,#00d2ff,#3a7bd5);border-color:transparent;color:#04121c;font-weight:700;}
+.status{font-size:17px;font-weight:600;color:#7fe3ff;margin:0 0 14px;}
+.pill{display:inline-block;font-size:12px;padding:4px 10px;border-radius:999px;
+background:rgba(255,255,255,.1);margin:0 4px 6px 0;color:#cfe9f5;}
+.pill.good{background:rgba(56,239,125,.18);color:#8bf3b6;}
 </style>
 </head>
 <body>
-<div class="card">
-    <h1>ESP32 Intercom</h1>
-    <div class="status">Status: Ringing...</div>
-    <form method="POST" action="/call"><button type="submit" class="btn btn-call">Call Doorbell</button></form>
-    <form method="POST" action="/answer"><button type="submit" class="btn btn-answer">Answer Call</button></form>
-    <form method="POST" action="/hangup"><button type="submit" class="btn btn-hangup">Hangup</button></form>
+<div class="wrap">
+    <!-- Rendered by index_get_handler() in main/ui_controller.c (station mode) -->
+    <nav class="nav">
+        <a href="/" class="on">Call</a>
+        <a href="/phonebook">Phonebook</a>
+        <a href="/setup">Settings</a>
+        <a href="/hardware">Hardware</a>
+        <a href="/logout">Logout</a>
+    </nav>
+
+    <div class="card">
+        <h1>ESP32 Intercom</h1>
+        <p class="status">Incoming call</p>
+        <span class="pill good">SIP registered</span>
+        <span class="pill">IP 192.168.1.42</span>
+        <span class="pill">Account 1000</span>
+        <span class="pill">Server 192.168.1.100:5060</span>
+        <p class="sub">Call target: sip:1001@192.168.1.100</p>
+
+        <form method="POST" action="/call"><button class="btn call" type="submit">Call</button></form>
+        <form method="POST" action="/answer"><button class="btn answer" type="submit">Answer</button></form>
+        <form method="POST" action="/hangup"><button class="btn hangup" type="submit">Hang up</button></form>
+    </div>
 </div>
 </body>
 </html>
