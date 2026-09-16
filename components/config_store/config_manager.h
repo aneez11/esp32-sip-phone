@@ -10,6 +10,13 @@ typedef struct {
     char sip_user[64];
     char sip_password[64];
 
+    // Audio output hardware: AUDIO_OUT_AUTO / AUDIO_OUT_I2S_AMP / AUDIO_OUT_ES8388.
+    uint8_t audio_out;
+
+    // Device role: DEVICE_ROLE_PHONE or DEVICE_ROLE_SPEAKER (auto-answer).
+    uint8_t device_role;
+    uint8_t auto_answer_delay_s;     // speaker mode only; 0 = answer immediately
+
     // Extended settings (managed from the web "Settings" page).
     uint16_t sip_port;               // 0 -> SIP_SERVER_PORT
     char sip_domain[64];             // empty -> sip_server

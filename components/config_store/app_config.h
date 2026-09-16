@@ -14,6 +14,9 @@
 //   override Wi-Fi + SIP credentials and GPIO pins at runtime via NVS.)
 // =====================================================================
 
+// --- Firmware identity (shown in the web UI footer) ---
+#define APP_VERSION            "v2.4.0"
+
 // --- Wi-Fi Configuration ---
 #define WIFI_SSID              "your_wifi_ssid"
 #define WIFI_PASSWORD          "your_wifi_password"
@@ -31,6 +34,21 @@
 #define SIP_RETRY_INTERVAL_MS  5000
 #define USE_SIPS               0          // 1 = SIP over TLS (experimental)
 #define SIP_TARGET_URI         "sip:1001@192.168.1.100" // Default call target
+
+// =====================================================================
+//  Device role — how the phone behaves when somebody calls it.
+//  Chosen at runtime on the web "Mode" card; values are stored in NVS.
+// =====================================================================
+#define DEVICE_ROLE_PHONE      0   // rings until a person answers (button / screen / web)
+#define DEVICE_ROLE_SPEAKER    1   // auto-answers incoming calls: intercom, paging, doorbell
+
+#ifdef CTRL_METHOD_AUTO
+#  define DEVICE_ROLE_DEFAULT  DEVICE_ROLE_SPEAKER
+#else
+#  define DEVICE_ROLE_DEFAULT  DEVICE_ROLE_PHONE
+#endif
+#define AUTO_ANSWER_DELAY_DEFAULT 0    // seconds; 0 = pick up immediately
+#define AUTO_ANSWER_DELAY_MAX     30
 
 // --- AI & Voice Activation ---
 #define USE_WAKE_WORD          0          // 4 MB board: wake word disabled to avoid the 8 MB model partition
@@ -168,12 +186,32 @@
 #define WIFI_TASK_PRIORITY      5
 #define SIP_TASK_PRIORITY       8
 #define AUDIO_IO_TASK_PRIORITY  10
-#define SIP_TASK_STACK_SIZE     8192
+// The SIP task builds every outgoing message (INVITE+SDP, REGISTER, BYE), which
+// needs ~3 KB of stack buffers on top of its 2 KB receive buffer.
+#define SIP_TASK_STACK_SIZE     10240
 #define AUDIO_TASK_STACK_SIZE   6144
 
 // --- Audio codec hardware driver ---
 #define USE_CODEC_ES8388
 //#define USE_CODEC_INMP441_MAX98357A
+
+// =====================================================================
+//  Audio output hardware — chosen at runtime on the web Settings page.
+//  A MAX98357A / PCM5102 style amp is a plain I2S DAC with no control bus,
+//  an ES8388/ES8311 needs its registers configured over I2C. AUTO probes the
+//  I2C codec only when I2C pins are configured and falls back to plain I2S.
+// =====================================================================
+#define AUDIO_OUT_AUTO      0
+#define AUDIO_OUT_I2S_AMP   1
+#define AUDIO_OUT_ES8388    2
+
+#if defined(USE_CODEC_INMP441_MAX98357A)
+#  define AUDIO_OUT_DEFAULT AUDIO_OUT_I2S_AMP
+#elif defined(USE_CODEC_ES8388)
+#  define AUDIO_OUT_DEFAULT AUDIO_OUT_AUTO
+#else
+#  define AUDIO_OUT_DEFAULT AUDIO_OUT_AUTO
+#endif
 
 // --- NAT Traversal (STUN) ---
 #define USE_STUN 1

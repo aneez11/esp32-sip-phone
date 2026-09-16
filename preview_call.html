@@ -4,57 +4,155 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ESP32 SIP Phone</title>
+<!-- Preview of the main page built by index_get_handler() in main/ui_controller.c.
+     One card per device mode is shown; the firmware renders exactly one of them.
+     The CSS below is the same PAGE_CSS the firmware serves inline. -->
 <style>
-:root{color-scheme:dark;}
-*{box-sizing:border-box;}
-body{margin:0;min-height:100vh;font-family:"Segoe UI",system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;
-color:#eaf4fb;background:linear-gradient(135deg,#0f2027,#203a43,#2c5364);display:flex;justify-content:center;padding:18px;}
-.wrap{width:100%;max-width:440px;}
-.card{background:rgba(255,255,255,.08);backdrop-filter:blur(12px);
-border:1px solid rgba(255,255,255,.15);border-radius:16px;padding:22px;
-box-shadow:0 8px 32px rgba(0,0,0,.35);margin-bottom:14px;}
-h1{font-size:22px;margin:0 0 4px;letter-spacing:.3px;}
-.sub{font-size:13px;color:#9fb3c6;margin:0 0 16px;line-height:1.45;}
-.btn{display:block;width:100%;padding:13px;margin-top:14px;border:0;border-radius:10px;
-color:#fff;font-size:15px;font-weight:600;cursor:pointer;background:linear-gradient(90deg,#00d2ff,#3a7bd5);}
-.btn:hover{filter:brightness(1.1);}
+:root{color-scheme:dark;}*{box-sizing:border-box;}
+body{margin:0;min-height:100vh;padding:16px;display:flex;justify-content:center;
+font-family:"Segoe UI",system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;
+color:#eaf4fb;background:linear-gradient(135deg,#0f2027,#203a43,#2c5364);}
+.wrap{width:100%;max-width:860px;}
+.grid{display:grid;gap:14px;align-items:start;}
+.grid>.wide{grid-column:1/-1;}
+@media(min-width:760px){.grid{grid-template-columns:1fr 1fr;}}
+.card{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.14);
+border-radius:16px;padding:20px;box-shadow:0 8px 32px rgba(0,0,0,.32);margin:0 0 14px;}
+.grid>.card{margin:0;}
+h1{font-size:21px;margin:0 0 4px;letter-spacing:.3px;}
+h2{font-size:12.5px;text-transform:uppercase;letter-spacing:1.1px;color:#8fd6ef;margin:0 0 4px;}
+.sub{font-size:12.5px;color:#9fb3c6;margin:0 0 14px;line-height:1.5;}
+.hint{display:block;font-size:11.5px;line-height:1.4;color:#8fa6ba;margin:5px 0 0;}
+.btn{display:block;width:100%;padding:12px;border:0;border-radius:10px;color:#fff;font-size:14.5px;
+font-weight:600;text-align:center;text-decoration:none;cursor:pointer;
+background:linear-gradient(90deg,#00d2ff,#3a7bd5);}
+.btn:disabled{opacity:.38;cursor:not-allowed;filter:none;}
 .btn.call{background:linear-gradient(90deg,#11998e,#38ef7d);}
 .btn.answer{background:linear-gradient(90deg,#2193b0,#6dd5ed);}
 .btn.hangup{background:linear-gradient(90deg,#cb2d3e,#ef473a);}
-.nav{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-bottom:14px;}
-.nav a{color:#cfe9f5;text-decoration:none;font-size:13px;padding:7px 12px;
-border-radius:999px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);}
+.actions{display:flex;gap:10px;}.actions form{flex:1;}
+.nav{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center;margin-bottom:14px;}
+.nav a{color:#cfe9f5;text-decoration:none;font-size:12.5px;padding:7px 12px;border-radius:999px;
+background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);}
 .nav a.on{background:linear-gradient(90deg,#00d2ff,#3a7bd5);border-color:transparent;color:#04121c;font-weight:700;}
-.status{font-size:17px;font-weight:600;color:#7fe3ff;margin:0 0 14px;}
-.pill{display:inline-block;font-size:12px;padding:4px 10px;border-radius:999px;
+.navmode{font-size:10.5px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;padding:7px 11px;
+border-radius:999px;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.07);color:#cfe9f5;}
+.navmode.ok{color:#8bf3b6;}.navmode.offline{color:#ffb3b8;}.navmode.wait{color:#ffd28a;}
+.navmode.ring,.navmode.call,.navmode.setup{color:#9fe8ff;}
+.banner{border-radius:16px;padding:18px;border:1px solid rgba(255,255,255,.16);box-shadow:0 8px 32px rgba(0,0,0,.3);}
+.banner h1{margin:0 0 6px;}
+.banner p{margin:0;font-size:13px;line-height:1.5;color:#e6f0f8;opacity:.93;}
+.banner.setup{background:linear-gradient(120deg,rgba(0,210,255,.22),rgba(58,123,213,.18));}
+.banner.offline{background:linear-gradient(120deg,rgba(203,45,62,.3),rgba(239,71,58,.16));}
+.banner.wait{background:linear-gradient(120deg,rgba(255,184,0,.24),rgba(255,140,0,.14));}
+.banner.ok{background:linear-gradient(120deg,rgba(17,153,142,.3),rgba(56,239,125,.18));}
+.banner.call{background:linear-gradient(120deg,rgba(0,210,255,.24),rgba(58,123,213,.2));}
+.banner.ring{background:linear-gradient(120deg,rgba(33,147,176,.36),rgba(109,213,237,.22));
+animation:pulse 1.5s ease-in-out infinite;}
+@keyframes pulse{0%,100%{box-shadow:0 8px 32px rgba(0,0,0,.3);}50%{box-shadow:0 0 24px rgba(0,210,255,.55);}}
+.pill{display:inline-block;font-size:11.5px;padding:4px 10px;border-radius:999px;
 background:rgba(255,255,255,.1);margin:0 4px 6px 0;color:#cfe9f5;}
 .pill.good{background:rgba(56,239,125,.18);color:#8bf3b6;}
+.pill.bad{background:rgba(203,45,62,.22);color:#ffb3b8;}
+.foot{text-align:center;font-size:11.5px;color:#8ea4b8;padding:12px 0 2px;}
+.mode-label{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#8ea4b8;margin:22px 0 8px;}
 </style>
 </head>
 <body>
 <div class="wrap">
-    <!-- Rendered by index_get_handler() in main/ui_controller.c (station mode) -->
     <nav class="nav">
         <a href="/" class="on">Call</a>
         <a href="/phonebook">Phonebook</a>
         <a href="/setup">Settings</a>
         <a href="/hardware">Hardware</a>
         <a href="/logout">Logout</a>
+        <span class="navmode ok">Ready</span>
     </nav>
 
-    <div class="card">
-        <h1>ESP32 Intercom</h1>
-        <p class="status">Incoming call</p>
-        <span class="pill good">SIP registered</span>
-        <span class="pill">IP 192.168.1.42</span>
-        <span class="pill">Account 1000</span>
-        <span class="pill">Server 192.168.1.100:5060</span>
-        <p class="sub">Call target: sip:1001@192.168.1.100</p>
-
-        <form method="POST" action="/call"><button class="btn call" type="submit">Call</button></form>
-        <form method="POST" action="/answer"><button class="btn answer" type="submit">Answer</button></form>
-        <form method="POST" action="/hangup"><button class="btn hangup" type="submit">Hang up</button></form>
+    <p class="mode-label">Mode: ready / registered</p>
+    <div class="grid">
+        <div class="wide">
+            <div class="banner ok">
+                <h1>Ready</h1>
+                <p>Registered and idle - ready to place or receive a call.</p>
+            </div>
+        </div>
+        <div class="card">
+            <h2>Connection</h2>
+            <span class="pill good">Wi-Fi connected</span>
+            <span class="pill good">SIP registered</span>
+            <span class="pill">IP 192.168.1.42</span>
+            <span class="pill">Up 0:03:12</span>
+            <span class="pill">Account 1000</span>
+            <span class="pill">Server 192.168.1.100:5060</span>
+            <p class="sub" style="margin:12px 0 0">Call target: sip:1001@192.168.1.100</p>
+            <h2 style="margin-top:18px">Call control</h2>
+            <div class="actions">
+                <form method="POST" action="/call"><button class="btn call" type="submit">Call</button></form>
+                <form method="POST" action="/answer"><button class="btn answer" type="submit" disabled>Answer</button></form>
+                <form method="POST" action="/hangup"><button class="btn hangup" type="submit" disabled>Hang up</button></form>
+            </div>
+        </div>
+        <div class="card">
+            <h2>Device</h2>
+            <p class="hint" style="margin:0 0 10px">Capabilities compiled into this firmware.</p>
+            <span class="pill">Mode: Phone</span>
+            <span class="pill">Profile: STANDARD</span>
+            <span class="pill">Audio: G.722 16 kHz</span>
+            <span class="pill">Control: button + web</span>
+            <span class="pill">Wake word off</span>
+        </div>
     </div>
+
+    <p class="mode-label">Mode: incoming call (Speaker role - auto pickup)</p>
+    <div class="grid">
+        <div class="wide">
+            <div class="banner ring">
+                <h1>Incoming call</h1>
+                <p>An inbound call is ringing from sip:1001@192.168.1.10 - picking it up in 5 s (speaker mode).</p>
+            </div>
+        </div>
+        <div class="card">
+            <h2>Connection</h2>
+            <span class="pill good">Wi-Fi connected</span>
+            <span class="pill good">SIP registered</span>
+            <span class="pill">IP 192.168.1.42</span>
+            <span class="pill">Account 1000</span>
+            <h2 style="margin-top:18px">Call control</h2>
+            <div class="actions">
+                <form method="POST" action="/call"><button class="btn call" type="submit" disabled>Call</button></form>
+                <form method="POST" action="/answer"><button class="btn answer" type="submit">Answer</button></form>
+                <form method="POST" action="/hangup"><button class="btn hangup" type="submit">Hang up</button></form>
+            </div>
+        </div>
+    </div>
+
+    <p class="mode-label">Mode: offline (other cards: setup, registering, calling, in call)</p>
+    <div class="grid">
+        <div class="wide">
+            <div class="banner offline">
+                <h1>Offline</h1>
+                <p>Wi-Fi is not connected. The device keeps retrying; if this persists, check the
+                network name and password.</p>
+            </div>
+        </div>
+        <div class="card">
+            <h2>Connection</h2>
+            <span class="pill bad">Wi-Fi disconnected</span>
+            <span class="pill bad">SIP not registered</span>
+            <span class="pill">IP 0.0.0.0</span>
+            <h2 style="margin-top:18px">Call control</h2>
+            <p class="sub">Call buttons unlock once the phone is registered.</p>
+            <div class="actions">
+                <form method="POST" action="/call"><button class="btn call" type="submit" disabled>Call</button></form>
+                <form method="POST" action="/answer"><button class="btn answer" type="submit" disabled>Answer</button></form>
+                <form method="POST" action="/hangup"><button class="btn hangup" type="submit" disabled>Hang up</button></form>
+            </div>
+            <a class="btn" href="/setup" style="margin-top:14px">Open settings</a>
+        </div>
+    </div>
+
+    <div class="foot">ESP32 SIP Voice v2.4.0 &middot; 192.168.1.42 &middot; Ready</div>
 </div>
 </body>
 </html>

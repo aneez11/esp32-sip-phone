@@ -28,6 +28,17 @@ extern int md5_vector(size_t num_elem, const unsigned char *addr[],
 static uint32_t ipaddr_to_u32(ip_addr_t *a) { return ip_addr_get_ip4_u32(a); }
 static void u32_to_ipaddr(ip_addr_t *dst, uint32_t v) { ip_addr_set_ip4_u32(dst, v); }
 
+// Signaling requests handed from other tasks (HTTP server, button, LVGL) to
+// sip_task, which is the only context that touches the socket and builds SIP
+// messages (they need ~3 KB of stack, more than those tasks have).
+typedef enum {
+    SIP_ACTION_NONE = 0,
+    SIP_ACTION_INVITE,
+    SIP_ACTION_ANSWER,
+    SIP_ACTION_HANGUP,
+    SIP_ACTION_REGISTER,
+} sip_action_t;
+
 typedef struct sip_client_s
 {
     EventGroupHandle_t event_group;
@@ -73,6 +84,15 @@ typedef struct sip_client_s
     volatile bool reload_pending;
     int reload_attempts;
     TickType_t reload_next_try; // backoff gate for a failing server lookup
+
+    // Deferred signaling request (see sip_action_t).
+    portMUX_TYPE action_lock;
+    volatile uint8_t pending_action;
+    char pending_target[128];
+
+    // Speaker mode: tick at which an incoming call is picked up automatically
+    // (0 = no auto-answer pending).
+    TickType_t auto_answer_at;
 
     // Digest auth
     char auth_realm[64];
@@ -256,6 +276,7 @@ sip_client_handle_t sip_client_init(EventGroupHandle_t app_event_group, EventBit
         return NULL;
     }
 
+    portMUX_INITIALIZE(&client->action_lock);
     client->event_group = app_event_group;
     client->registered_bit = registered_event_bit;
     client->audio = audio_handle;
@@ -353,26 +374,37 @@ esp_err_t sip_client_reload(sip_client_handle_t handle)
     return ESP_OK;
 }
 
+// ---- deferred signaling actions -------------------------------------------
+// Building a SIP message needs ~3 KB of stack (INVITE/SDP/digest buffers), but
+// callers such as the HTTP server (4 KB), the FreeRTOS timer task and the
+// button task (2 KB) cannot afford that: doing the work there overflowed their
+// stacks and reset the device. Every public entry point therefore only records
+// the request; sip_task - which owns the socket and an 8 KB stack - performs it.
+
+static void request_action(sip_client_t *client, sip_action_t action) {
+    taskENTER_CRITICAL(&client->action_lock);
+    client->pending_action = (uint8_t)action;
+    taskEXIT_CRITICAL(&client->action_lock);
+}
+
 esp_err_t sip_client_initiate_call(sip_client_handle_t handle, const char *target_uri)
 {
     sip_client_t *client = (sip_client_t *)handle;
-    if (!client || !target_uri || client->call_state != SIP_CALL_STATE_IDLE || !client->is_registered)
+    if (!client || !target_uri || !target_uri[0] ||
+        client->call_state != SIP_CALL_STATE_IDLE || !client->is_registered)
     {
         ESP_LOGE(TAG, "Cannot call: state=%d registered=%d", client ? client->call_state : -1,
                  client ? client->is_registered : 0);
         return ESP_FAIL;
     }
-    strncpy(client->current_remote_uri, target_uri, sizeof(client->current_remote_uri) - 1);
-    client->call_state = SIP_CALL_STATE_INVITING;
-    client->invite_start_ts = xTaskGetTickCount();
-    client->negotiated_pt = -1;
-    snprintf(client->current_call_id, sizeof(client->current_call_id), "%08" PRIx32 "%08" PRIx32,
-             esp_random(), esp_random());
-    snprintf(client->current_from_tag, sizeof(client->current_from_tag), "%08" PRIx32, esp_random());
-    client->current_to_tag[0] = '\0';
 
-    ESP_LOGI(TAG, "Calling %s (Call-ID %s)", target_uri, client->current_call_id);
-    send_invite(client, target_uri);
+    taskENTER_CRITICAL(&client->action_lock);
+    strncpy(client->pending_target, target_uri, sizeof(client->pending_target) - 1);
+    client->pending_target[sizeof(client->pending_target) - 1] = '\0';
+    client->pending_action = (uint8_t)SIP_ACTION_INVITE;
+    taskEXIT_CRITICAL(&client->action_lock);
+
+    ESP_LOGI(TAG, "Call requested: %s", target_uri);
     return ESP_OK;
 }
 
@@ -384,9 +416,7 @@ esp_err_t sip_client_answer_call(sip_client_handle_t handle)
         ESP_LOGE(TAG, "Cannot answer: state=%d", client ? client->call_state : -1);
         return ESP_FAIL;
     }
-    ESP_LOGI(TAG, "Answering call %s", client->current_call_id);
-    send_sip_response(client, 200, "OK", client->current_to_tag);
-    client->call_state = SIP_CALL_STATE_CONNECTING; // wait for ACK before audio
+    request_action(client, SIP_ACTION_ANSWER);
     return ESP_OK;
 }
 
@@ -396,36 +426,96 @@ esp_err_t sip_client_terminate_call(sip_client_handle_t handle)
     if (!client)
         return ESP_ERR_INVALID_ARG;
 
-    if (client->call_state == SIP_CALL_STATE_ACTIVE ||
-        client->call_state == SIP_CALL_STATE_CONNECTING ||
-        client->call_state == SIP_CALL_STATE_RINGING ||
-        client->call_state == SIP_CALL_STATE_INCOMING ||
-        client->call_state == SIP_CALL_STATE_INVITING)
-    {
-
-        char ended_id[128];
-        strncpy(ended_id, client->current_call_id, sizeof(ended_id) - 1);
-        ended_id[sizeof(ended_id) - 1] = '\0';
-
-        ESP_LOGI(TAG, "Terminating call %s (state %d)", client->current_call_id, client->call_state);
-        send_bye(client);
-        client->call_state = SIP_CALL_STATE_TERMINATING;
-
-        if (client->audio)
-            audio_pipeline_stop(client->audio);
-
-        client->call_state = SIP_CALL_STATE_IDLE;
-        client->current_call_id[0] = '\0';
-        client->negotiated_pt = -1;
-        if (client->app_callbacks.on_call_ended)
-            client->app_callbacks.on_call_ended(ended_id);
-    }
-    else
+    if (client->call_state != SIP_CALL_STATE_ACTIVE &&
+        client->call_state != SIP_CALL_STATE_CONNECTING &&
+        client->call_state != SIP_CALL_STATE_RINGING &&
+        client->call_state != SIP_CALL_STATE_INCOMING &&
+        client->call_state != SIP_CALL_STATE_INVITING)
     {
         ESP_LOGW(TAG, "No active call (state %d)", client->call_state);
         return ESP_FAIL;
     }
+
+    request_action(client, SIP_ACTION_HANGUP);
     return ESP_OK;
+}
+
+// Runs in sip_task only. All heavy message building happens here.
+static void do_invite(sip_client_t *client)
+{
+    if (client->call_state != SIP_CALL_STATE_IDLE || !client->is_registered || !client->pending_target[0])
+    {
+        ESP_LOGW(TAG, "Dropping INVITE request (state=%d registered=%d)", client->call_state,
+                 client->is_registered);
+        return;
+    }
+
+    snprintf(client->current_remote_uri, sizeof(client->current_remote_uri), "%s", client->pending_target);
+    client->call_state = SIP_CALL_STATE_INVITING;
+    client->invite_start_ts = xTaskGetTickCount();
+    client->negotiated_pt = -1;
+    snprintf(client->current_call_id, sizeof(client->current_call_id), "%08" PRIx32 "%08" PRIx32,
+             esp_random(), esp_random());
+    snprintf(client->current_from_tag, sizeof(client->current_from_tag), "%08" PRIx32, esp_random());
+    client->current_to_tag[0] = '\0';
+
+    ESP_LOGI(TAG, "Calling %s (Call-ID %s)", client->current_remote_uri, client->current_call_id);
+    send_invite(client, client->current_remote_uri);
+}
+
+static void do_answer(sip_client_t *client)
+{
+    if (client->call_state != SIP_CALL_STATE_INCOMING)
+    {
+        ESP_LOGW(TAG, "Dropping answer request (state=%d)", client->call_state);
+        return;
+    }
+    ESP_LOGI(TAG, "Answering call %s", client->current_call_id);
+    send_sip_response(client, 200, "OK", client->current_to_tag);
+    client->call_state = SIP_CALL_STATE_CONNECTING; // wait for ACK before audio
+}
+
+static void do_hangup(sip_client_t *client)
+{
+    client->auto_answer_at = 0; // never auto-answer a call we are ending
+    if (client->call_state == SIP_CALL_STATE_IDLE || client->call_state == SIP_CALL_STATE_ENDED)
+    {
+        return;
+    }
+
+    char ended_id[128];
+    snprintf(ended_id, sizeof(ended_id), "%s", client->current_call_id);
+
+    ESP_LOGI(TAG, "Terminating call %s (state %d)", client->current_call_id, client->call_state);
+    send_bye(client);
+    client->call_state = SIP_CALL_STATE_TERMINATING;
+
+    if (client->audio)
+        audio_pipeline_stop(client->audio);
+
+    client->call_state = SIP_CALL_STATE_IDLE;
+    client->current_call_id[0] = '\0';
+    client->negotiated_pt = -1;
+    if (client->app_callbacks.on_call_ended)
+        client->app_callbacks.on_call_ended(ended_id);
+}
+
+// Called from sip_task: perform one deferred request, if any.
+static void service_pending_action(sip_client_t *client)
+{
+    taskENTER_CRITICAL(&client->action_lock);
+    uint8_t action = client->pending_action;
+    client->pending_action = (uint8_t)SIP_ACTION_NONE;
+    taskEXIT_CRITICAL(&client->action_lock);
+
+    switch ((sip_action_t)action)
+    {
+    case SIP_ACTION_INVITE: do_invite(client); break;
+    case SIP_ACTION_ANSWER: do_answer(client); break;
+    case SIP_ACTION_HANGUP: do_hangup(client); break;
+    case SIP_ACTION_REGISTER: if (client->sip_socket >= 0) send_register(client, SIP_REGISTRATION_EXPIRY); break;
+    default: break;
+    }
 }
 
 uint16_t sip_client_get_local_rtp_port(sip_client_handle_t handle)
@@ -583,8 +673,30 @@ static void sip_task(void *pvParameters)
         fd_set rf;
         FD_ZERO(&rf);
         FD_SET(client->sip_socket, &rf);
-        struct timeval tv = {.tv_sec = 1, .tv_usec = 0};
+        // Short timeout: this loop also services requests coming from the web
+        // UI, the button and the LVGL UI, so latency stays well under 200 ms.
+        struct timeval tv = {.tv_sec = 0, .tv_usec = 200000};
         int s = select(client->sip_socket + 1, &rf, NULL, NULL, &tv);
+
+        // Speaker mode: pick up the ringing call once the delay has elapsed.
+        if (client->auto_answer_at != 0 &&
+            (client->call_state == SIP_CALL_STATE_INCOMING || client->call_state == SIP_CALL_STATE_RINGING))
+        {
+            if ((int32_t)(xTaskGetTickCount() - client->auto_answer_at) >= 0)
+            {
+                client->auto_answer_at = 0;
+                ESP_LOGI(TAG, "Speaker mode: picking up the call");
+                do_answer(client);
+            }
+        }
+        else if (client->auto_answer_at != 0 &&
+                 client->call_state != SIP_CALL_STATE_INCOMING && client->call_state != SIP_CALL_STATE_RINGING)
+        {
+            client->auto_answer_at = 0; // call vanished before we answered
+        }
+
+        // Perform anything another task asked for (INVITE/answer/hangup/REGISTER).
+        service_pending_action(client);
 
         // Apply web-UI changes to the SIP account once we are not mid-call.
         if (client->reload_pending && client->call_state == SIP_CALL_STATE_IDLE)
@@ -666,10 +778,12 @@ static esp_err_t create_sip_socket(sip_client_t *client)
 
 static void registration_timer_callback(TimerHandle_t xTimer)
 {
+    // Runs in the FreeRTOS timer task (CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH,
+    // 2 KB): only queue the refresh, sip_task builds and sends the REGISTER.
     sip_client_t *client = (sip_client_t *)pvTimerGetTimerID(xTimer);
-    if (client && client->sip_socket >= 0)
+    if (client)
     {
-        send_register(client, SIP_REGISTRATION_EXPIRY);
+        request_action(client, SIP_ACTION_REGISTER);
     }
 }
 
@@ -1375,10 +1489,16 @@ static void process_incoming_sip(sip_client_t *client, char *buffer, int len, st
 
                 if (client->app_callbacks.on_incoming_call)
                     client->app_callbacks.on_incoming_call(from_hdr, client->current_call_id);
-#ifdef CTRL_METHOD_AUTO
-                ESP_LOGI(TAG, "Auto-answering");
-                sip_client_answer_call(client);
-#endif
+
+                // Speaker role: pick up by itself (after the configured delay).
+                uint8_t role = client->settings ? client->settings->device_role : DEVICE_ROLE_PHONE;
+                if (role == DEVICE_ROLE_SPEAKER)
+                {
+                    uint8_t delay = client->settings ? client->settings->auto_answer_delay_s : 0;
+                    // +1 tick so a zero-second delay fires on the next loop pass.
+                    client->auto_answer_at = xTaskGetTickCount() + pdMS_TO_TICKS((uint32_t)delay * 1000u) + 1;
+                    ESP_LOGI(TAG, "Speaker mode: auto-answering in %u s", (unsigned)delay);
+                }
             }
             else
             {

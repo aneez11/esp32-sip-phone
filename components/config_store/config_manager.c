@@ -27,6 +27,9 @@ static void apply_defaults(app_settings_t *settings) {
     snprintf(settings->sip_server, sizeof(settings->sip_server), "%s", SIP_SERVER_IP);
     snprintf(settings->sip_user, sizeof(settings->sip_user), "%s", SIP_USER);
     snprintf(settings->sip_password, sizeof(settings->sip_password), "%s", SIP_PASSWORD);
+    settings->audio_out = AUDIO_OUT_DEFAULT;
+    settings->device_role = DEVICE_ROLE_DEFAULT;
+    settings->auto_answer_delay_s = AUTO_ANSWER_DELAY_DEFAULT;
     settings->sip_port = SIP_SERVER_PORT;
     // SIP_DOMAIN is empty by default: an empty domain means "use the SIP server
     // as the realm/domain" (sip_client falls back to sip_server). Seeding a
@@ -71,6 +74,19 @@ esp_err_t config_manager_load(app_settings_t *settings) {
         settings->sip_port = port;
     }
 
+    uint8_t audio_out = 0;
+    if (nvs_get_u8(my_handle, "audio_out", &audio_out) == ESP_OK && audio_out <= AUDIO_OUT_ES8388) {
+        settings->audio_out = audio_out;
+    }
+    uint8_t role = 0;
+    if (nvs_get_u8(my_handle, "role", &role) == ESP_OK && role <= DEVICE_ROLE_SPEAKER) {
+        settings->device_role = role;
+    }
+    uint8_t delay = 0;
+    if (nvs_get_u8(my_handle, "auto_answer", &delay) == ESP_OK) {
+        settings->auto_answer_delay_s = (delay > AUTO_ANSWER_DELAY_MAX) ? AUTO_ANSWER_DELAY_MAX : delay;
+    }
+
     nvs_close(my_handle);
     ESP_LOGI(TAG, "Settings loaded from NVS");
     return ESP_OK;
@@ -92,6 +108,9 @@ esp_err_t config_manager_save(const app_settings_t *settings) {
     nvs_set_str(my_handle, "web_user", settings->web_user);
     nvs_set_str(my_handle, "web_pass", settings->web_password);
     nvs_set_u16(my_handle, "sip_port", settings->sip_port);
+    nvs_set_u8(my_handle, "audio_out", settings->audio_out);
+    nvs_set_u8(my_handle, "role", settings->device_role);
+    nvs_set_u8(my_handle, "auto_answer", settings->auto_answer_delay_s);
 
     err = nvs_commit(my_handle);
     nvs_close(my_handle);

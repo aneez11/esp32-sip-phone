@@ -79,6 +79,7 @@ typedef struct audio_pipeline_s
 #endif
 
     SemaphoreHandle_t stop_ack_sem;
+    bool played_first_frame; // logged once per call, helps diagnose "no audio"
 
     // Working buffers
     int16_t mic_pcm[AUDIO_BUF_SAMPLES];
@@ -296,6 +297,7 @@ esp_err_t audio_pipeline_start(audio_pipeline_handle_t handle, uint16_t local_rt
     }
 
     memset(p->ref_pcm, 0, sizeof(p->ref_pcm));
+    p->played_first_frame = false;
     p->is_running = true;
     ESP_LOGI(TAG, "Pipeline started: codec PT=%d, rate=%d Hz, %d samples/frame",
              p->rtp_payload_type, p->codec_audio_rate, p->samples_per_frame);
@@ -379,7 +381,8 @@ static void audio_io_task(void *pv)
 #if USE_WAKE_WORD
             // Idle: capture 16 kHz and feed WakeNet.
             int idle_samples = IDLE_SAMPLE_RATE * AUDIO_FRAME_MS / 1000;
-            if (i2s_channel_read(i2s_rx_handle, p->mic_pcm, idle_samples * sizeof(int16_t), &bytes_rw,
+            if (i2s_rx_handle &&
+                i2s_channel_read(i2s_rx_handle, p->mic_pcm, idle_samples * sizeof(int16_t), &bytes_rw,
                                  pdMS_TO_TICKS(AUDIO_FRAME_MS * 2) * portTICK_PERIOD_MS) == ESP_OK &&
                 bytes_rw > 0)
             {
@@ -412,7 +415,9 @@ static void audio_io_task(void *pv)
         was_running = true;
 
         // --- Capture mic -> AEC -> encode -> send ---
-        if (i2s_channel_read(i2s_rx_handle, p->mic_pcm, N * sizeof(int16_t), &bytes_rw,
+        // Skipped entirely when no microphone is wired (TX-only playback device).
+        if (i2s_rx_handle &&
+            i2s_channel_read(i2s_rx_handle, p->mic_pcm, N * sizeof(int16_t), &bytes_rw,
                              pdMS_TO_TICKS(AUDIO_FRAME_MS * 2) * portTICK_PERIOD_MS) == ESP_OK &&
             bytes_rw == (size_t)(N * sizeof(int16_t)))
         {
@@ -468,6 +473,16 @@ static void audio_io_task(void *pv)
             if (play_samples > AUDIO_BUF_SAMPLES)
                 play_samples = AUDIO_BUF_SAMPLES;
 
+            if (plen > 0 && !p->played_first_frame)
+            {
+                p->played_first_frame = true;
+                ESP_LOGI(TAG, "Playing first RTP frame (%d samples, %d payload bytes)",
+                         play_samples, plen);
+            }
+
+            // Amps without a volume register are scaled here instead.
+            codec_apply_volume(p->play_pcm, (size_t)play_samples);
+
             // Keep a copy as the AEC reference for the next captured frame.
             memcpy(p->ref_pcm, p->play_pcm, play_samples * sizeof(int16_t));
 
@@ -485,21 +500,25 @@ static esp_err_t i2s_init(int sample_rate)
 {
     hardware_settings_t hw;
     config_manager_load_hw(&hw);
+    // Unset BCLK/WS/DOUT fall back to the board defaults; -1 for the mic means
+    // "no microphone connected", which runs I2S in TX-only (playback) mode.
     int bck = hw.pin_i2s_bck != -1 ? hw.pin_i2s_bck : I2S_BCK_PIN;
     int ws = hw.pin_i2s_ws != -1 ? hw.pin_i2s_ws : I2S_WS_PIN;
     int dout = hw.pin_i2s_dout != -1 ? hw.pin_i2s_dout : I2S_DATA_OUT_PIN;
-    int din = hw.pin_i2s_din != -1 ? hw.pin_i2s_din : I2S_DATA_IN_PIN;
+    bool has_mic = (hw.pin_i2s_din != -1);
+    int din = has_mic ? hw.pin_i2s_din : I2S_GPIO_UNUSED;
 
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM, I2S_ROLE_MASTER);
     chan_cfg.dma_desc_num = I2S_DMA_BUF_COUNT;
     chan_cfg.dma_frame_num = I2S_DMA_BUF_LEN;
 
-    esp_err_t ret = i2s_new_channel(&chan_cfg, &i2s_tx_handle, &i2s_rx_handle);
+    esp_err_t ret = i2s_new_channel(&chan_cfg, &i2s_tx_handle, has_mic ? &i2s_rx_handle : NULL);
     if (ret != ESP_OK)
     {
         ESP_LOGE(TAG, "i2s_new_channel failed: %d", ret);
         return ret;
     }
+    ESP_LOGI(TAG, "I2S mode: %s", has_mic ? "playback + microphone" : "TX only (no microphone)");
 
     i2s_std_config_t std_cfg = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(sample_rate),
@@ -519,31 +538,28 @@ static esp_err_t i2s_init(int sample_rate)
     };
 
     ret = i2s_channel_init_std_mode(i2s_tx_handle, &std_cfg);
-    if (ret != ESP_OK)
+    if (ret == ESP_OK && i2s_rx_handle)
     {
-        ESP_LOGE(TAG, "i2s TX initialization failed: %d", ret);
-        i2s_del_channel(i2s_tx_handle);
-        i2s_del_channel(i2s_rx_handle);
-        return ret;
+        ret = i2s_channel_init_std_mode(i2s_rx_handle, &std_cfg);
     }
-    ret = i2s_channel_init_std_mode(i2s_rx_handle, &std_cfg);
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE(TAG, "i2s RX initialization failed: %d", ret);
-        i2s_del_channel(i2s_tx_handle);
-        i2s_del_channel(i2s_rx_handle);
-        return ret;
-    }
-    ret = i2s_channel_enable(i2s_tx_handle);
     if (ret == ESP_OK)
-        ret = i2s_channel_enable(i2s_rx_handle);
+    {
+        ret = i2s_channel_enable(i2s_tx_handle);
+        if (ret == ESP_OK && i2s_rx_handle)
+            ret = i2s_channel_enable(i2s_rx_handle);
+    }
     if (ret != ESP_OK)
     {
-        ESP_LOGE(TAG, "i2s channel enable failed: %d", ret);
+        ESP_LOGE(TAG, "i2s channel init/enable failed: %d", ret);
         i2s_channel_disable(i2s_tx_handle);
-        i2s_channel_disable(i2s_rx_handle);
         i2s_del_channel(i2s_tx_handle);
-        i2s_del_channel(i2s_rx_handle);
+        if (i2s_rx_handle)
+        {
+            i2s_channel_disable(i2s_rx_handle);
+            i2s_del_channel(i2s_rx_handle);
+        }
+        i2s_tx_handle = NULL;
+        i2s_rx_handle = NULL;
         return ret;
     }
     ESP_LOGI(TAG, "I2S initialized @ %d Hz, 16-bit mono.", sample_rate);
@@ -552,12 +568,14 @@ static esp_err_t i2s_init(int sample_rate)
 
 static esp_err_t i2s_deinit(void)
 {
+    if (!i2s_tx_handle)
+        return ESP_OK;
     esp_err_t ret = i2s_channel_disable(i2s_tx_handle);
-    if (i2s_channel_disable(i2s_rx_handle) != ESP_OK && ret == ESP_OK)
+    if (i2s_rx_handle && i2s_channel_disable(i2s_rx_handle) != ESP_OK && ret == ESP_OK)
         ret = ESP_FAIL;
     if (i2s_del_channel(i2s_tx_handle) != ESP_OK && ret == ESP_OK)
         ret = ESP_FAIL;
-    if (i2s_del_channel(i2s_rx_handle) != ESP_OK && ret == ESP_OK)
+    if (i2s_rx_handle && i2s_del_channel(i2s_rx_handle) != ESP_OK && ret == ESP_OK)
         ret = ESP_FAIL;
     i2s_tx_handle = NULL;
     i2s_rx_handle = NULL;
@@ -566,19 +584,19 @@ static esp_err_t i2s_deinit(void)
 
 static void i2s_set_rate(audio_pipeline_t *p, int rate)
 {
-    if (p->current_i2s_rate == rate)
+    if (p->current_i2s_rate == rate || !i2s_tx_handle)
         return;
     i2s_std_clk_config_t clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(rate);
     esp_err_t ret = i2s_channel_disable(i2s_tx_handle);
-    if (ret == ESP_OK)
+    if (ret == ESP_OK && i2s_rx_handle)
         ret = i2s_channel_disable(i2s_rx_handle);
     if (ret == ESP_OK)
         ret = i2s_channel_reconfig_std_clock(i2s_tx_handle, &clk_cfg);
-    if (ret == ESP_OK)
+    if (ret == ESP_OK && i2s_rx_handle)
         ret = i2s_channel_reconfig_std_clock(i2s_rx_handle, &clk_cfg);
     if (ret == ESP_OK)
         ret = i2s_channel_enable(i2s_tx_handle);
-    if (ret == ESP_OK)
+    if (ret == ESP_OK && i2s_rx_handle)
         ret = i2s_channel_enable(i2s_rx_handle);
     if (ret == ESP_OK)
     {

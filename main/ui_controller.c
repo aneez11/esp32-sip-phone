@@ -208,6 +208,15 @@ static const char *mode_name(device_mode_t m) {
     }
 }
 
+// ---- runtime device role (chosen on the Settings page) ----
+static bool speaker_mode(void) {
+    return g_settings && g_settings->device_role == DEVICE_ROLE_SPEAKER;
+}
+
+static const char *role_name(void) {
+    return speaker_mode() ? "Speaker" : "Phone";
+}
+
 // ---- compile-time capability profile (shown as device info) ----
 static const char *profile_name(void) {
 #if defined(CONFIG_SIP_PROFILE_PRO)
@@ -243,6 +252,9 @@ static const char *control_name(void) {
 //  Tiny HTML page builder (heap backed, truncation safe)
 // =====================================================================
 
+#define PAGE_MIN_CAP 1024
+#define PAGE_MAX_CAP 24576
+
 typedef struct {
     char  *buf;
     size_t cap;
@@ -251,29 +263,46 @@ typedef struct {
 } page_t;
 
 static void pg_init(page_t *p, size_t cap) {
+    if (cap < PAGE_MIN_CAP) cap = PAGE_MIN_CAP;
     p->buf = calloc(1, cap);
     p->cap = p->buf ? cap : 0;
     p->len = 0;
     p->ok  = (p->buf != NULL);
 }
 
+// Grow the buffer only as far as the page actually needs, so short pages stay
+// cheap on the device heap and long ones cannot be truncated.
+static bool pg_reserve(page_t *p, size_t extra) {
+    if (p->cap - p->len > extra) return true;
+    size_t cap = p->cap ? p->cap : PAGE_MIN_CAP;
+    while (cap - p->len <= extra) {
+        if (cap >= PAGE_MAX_CAP) return false;
+        cap = (cap * 2 > PAGE_MAX_CAP) ? PAGE_MAX_CAP : cap * 2;
+    }
+    char *grown = realloc(p->buf, cap);
+    if (!grown) return false;
+    p->buf = grown;
+    p->cap = cap;
+    return true;
+}
+
 static void pg_printf(page_t *p, const char *fmt, ...) {
-    if (!p->ok || p->cap == 0 || p->len + 1 >= p->cap) {
+    if (!p->ok) return;
+
+    va_list ap, ap2;
+    va_start(ap, fmt);
+    va_copy(ap2, ap);
+    int need = vsnprintf(NULL, 0, fmt, ap);
+    va_end(ap);
+
+    if (need < 0 || !pg_reserve(p, (size_t)need + 1)) {
+        va_end(ap2);
         p->ok = false;
         return;
     }
-    va_list ap;
-    va_start(ap, fmt);
-    int n = vsnprintf(p->buf + p->len, p->cap - p->len, fmt, ap);
-    va_end(ap);
-    if (n < 0) {
-        p->ok = false;
-    } else if ((size_t)n >= p->cap - p->len) {
-        p->len = p->cap - 1; // keeps a NUL terminator
-        p->ok = false;
-    } else {
-        p->len += (size_t)n;
-    }
+    vsnprintf(p->buf + p->len, p->cap - p->len, fmt, ap2);
+    va_end(ap2);
+    p->len += (size_t)need;
 }
 
 static void pg_puts(page_t *p, const char *s) { pg_printf(p, "%s", s); }
@@ -293,80 +322,179 @@ static void pg_escape(page_t *p, const char *s) {
     }
 }
 
+// Single small stylesheet for every page: mobile first, two columns on wider
+// screens, no external fonts or assets (the device serves it for every request).
 static const char PAGE_CSS[] =
-    ":root{color-scheme:dark;}"
-    "*{box-sizing:border-box;}"
-    "body{margin:0;min-height:100vh;font-family:" "\"Segoe UI\",system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;"
-    "color:#eaf4fb;background:linear-gradient(135deg,#0f2027,#203a43,#2c5364);"
-    "display:flex;justify-content:center;padding:18px;}"
-    ".wrap{width:100%;max-width:440px;}"
-    ".card{background:rgba(255,255,255,.08);backdrop-filter:blur(12px);"
-    "border:1px solid rgba(255,255,255,.15);border-radius:16px;padding:22px;"
-    "box-shadow:0 8px 32px rgba(0,0,0,.35);margin-bottom:14px;}"
-    "h1{font-size:22px;margin:0 0 4px;letter-spacing:.3px;}"
-    "h2{font-size:14px;text-transform:uppercase;letter-spacing:1px;color:#8fd6ef;margin:0 0 10px;}"
-    ".sub{font-size:13px;color:#9fb3c6;margin:0 0 16px;line-height:1.45;}"
-    "label{display:block;font-size:12px;letter-spacing:.4px;text-transform:uppercase;"
-    "color:#a8bccd;margin:12px 0 5px;}"
-    "input,select{width:100%;padding:11px;border-radius:9px;font-size:15px;"
-    "border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06);color:#fff;}"
+    ":root{color-scheme:dark;}*{box-sizing:border-box;}"
+    "body{margin:0;min-height:100vh;padding:16px;display:flex;justify-content:center;"
+    "font-family:\"Segoe UI\",system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;"
+    "color:#eaf4fb;background:linear-gradient(135deg,#0f2027,#203a43,#2c5364);}"
+    ".wrap{width:100%;max-width:860px;}"
+    ".grid{display:grid;gap:14px;align-items:start;}"
+    ".grid>.wide{grid-column:1/-1;}"
+    "@media(min-width:760px){.grid{grid-template-columns:1fr 1fr;}}"
+    ".card{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.14);"
+    "border-radius:16px;padding:20px;box-shadow:0 8px 32px rgba(0,0,0,.32);margin:0 0 14px;}"
+    ".grid>.card{margin:0;}"
+    "h1{font-size:21px;margin:0 0 4px;letter-spacing:.3px;}"
+    "h2{font-size:12.5px;text-transform:uppercase;letter-spacing:1.1px;color:#8fd6ef;margin:0 0 4px;}"
+    "h3{font-size:14px;margin:0 0 4px;color:#dff0fa;}"
+    ".sub{font-size:12.5px;color:#9fb3c6;margin:0 0 14px;line-height:1.5;}"
+    ".hint{display:block;font-size:11.5px;line-height:1.4;color:#8fa6ba;margin:5px 0 0;}"
+    "label{display:block;font-size:11.5px;letter-spacing:.4px;text-transform:uppercase;color:#a8bccd;margin:0 0 5px;}"
+    "input,select{width:100%;padding:10px 11px;border-radius:9px;font-size:14.5px;color:#fff;"
+    "border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06);}"
     "input::placeholder{color:#7d90a3;}"
-    "input:focus,select:focus{outline:none;border-color:#00d2ff;box-shadow:0 0 10px rgba(0,210,255,.45);}"
-    ".btn{display:block;width:100%;padding:13px;margin-top:14px;border:0;border-radius:10px;"
-    "color:#fff;font-size:15px;font-weight:600;cursor:pointer;text-align:center;text-decoration:none;"
+    "input:focus,select:focus{outline:none;border-color:#00d2ff;box-shadow:0 0 10px rgba(0,210,255,.4);}"
+    ".fields{display:grid;gap:12px;}"
+    ".fields.pins{grid-template-columns:1fr 1fr;}"
+    "@media(min-width:540px){.fields{grid-template-columns:repeat(auto-fit,minmax(170px,1fr));}}"
+    ".field{min-width:0;}"
+    ".btn{display:block;width:100%;padding:12px;border:0;border-radius:10px;color:#fff;font-size:14.5px;"
+    "font-weight:600;text-align:center;text-decoration:none;cursor:pointer;"
     "background:linear-gradient(90deg,#00d2ff,#3a7bd5);}"
-    ".btn:hover{filter:brightness(1.1);}"
+    ".btn:hover{filter:brightness(1.08);}"
     ".btn:disabled{opacity:.38;cursor:not-allowed;filter:none;}"
     ".btn.call{background:linear-gradient(90deg,#11998e,#38ef7d);}"
     ".btn.answer{background:linear-gradient(90deg,#2193b0,#6dd5ed);}"
     ".btn.hangup{background:linear-gradient(90deg,#cb2d3e,#ef473a);}"
-    ".actions{display:flex;gap:10px;}.actions form{flex:1;}.actions .btn{margin-top:0;}"
-    ".banner{border-radius:16px;padding:18px;margin-bottom:14px;"
-    "border:1px solid rgba(255,255,255,.16);box-shadow:0 8px 32px rgba(0,0,0,.3);}"
+    ".actions{display:flex;gap:10px;}.actions form{flex:1;}"
+    ".savebar{position:sticky;bottom:0;z-index:5;display:flex;flex-wrap:wrap;gap:12px;align-items:center;"
+    "background:rgba(11,26,33,.94);border:1px solid rgba(255,255,255,.16);border-radius:14px;"
+    "padding:12px 14px;margin-top:2px;box-shadow:0 -6px 24px rgba(0,0,0,.35);}"
+    ".savebar .btn{margin:0;flex:1;min-width:150px;}"
+    ".savebar .hint{margin:0;flex:1.5;min-width:170px;}"
+    ".nav{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center;margin-bottom:14px;}"
+    ".nav a{color:#cfe9f5;text-decoration:none;font-size:12.5px;padding:7px 12px;border-radius:999px;"
+    "background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);}"
+    ".nav a.on{background:linear-gradient(90deg,#00d2ff,#3a7bd5);border-color:transparent;color:#04121c;font-weight:700;}"
+    ".navmode{font-size:10.5px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;padding:7px 11px;"
+    "border-radius:999px;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.07);color:#cfe9f5;}"
+    ".navmode.ok{color:#8bf3b6;}.navmode.offline{color:#ffb3b8;}.navmode.wait{color:#ffd28a;}"
+    ".navmode.ring,.navmode.call,.navmode.setup{color:#9fe8ff;}"
+    ".banner{border-radius:16px;padding:18px;border:1px solid rgba(255,255,255,.16);"
+    "box-shadow:0 8px 32px rgba(0,0,0,.3);}"
     ".banner h1{margin:0 0 6px;}"
-    ".banner p{margin:0;font-size:13px;line-height:1.5;color:#e6f0f8;opacity:.92;}"
+    ".banner p{margin:0;font-size:13px;line-height:1.5;color:#e6f0f8;opacity:.93;}"
     ".banner.setup{background:linear-gradient(120deg,rgba(0,210,255,.22),rgba(58,123,213,.18));}"
-    ".banner.offline{background:linear-gradient(120deg,rgba(203,45,62,.30),rgba(239,71,58,.16));}"
+    ".banner.offline{background:linear-gradient(120deg,rgba(203,45,62,.3),rgba(239,71,58,.16));}"
     ".banner.wait{background:linear-gradient(120deg,rgba(255,184,0,.24),rgba(255,140,0,.14));}"
-    ".banner.ok{background:linear-gradient(120deg,rgba(17,153,142,.30),rgba(56,239,125,.18));}"
-    ".banner.call{background:linear-gradient(120deg,rgba(0,210,255,.24),rgba(58,123,213,.20));}"
+    ".banner.ok{background:linear-gradient(120deg,rgba(17,153,142,.3),rgba(56,239,125,.18));}"
+    ".banner.call{background:linear-gradient(120deg,rgba(0,210,255,.24),rgba(58,123,213,.2));}"
     ".banner.ring{background:linear-gradient(120deg,rgba(33,147,176,.36),rgba(109,213,237,.22));"
     "animation:pulse 1.5s ease-in-out infinite;}"
     "@keyframes pulse{0%,100%{box-shadow:0 8px 32px rgba(0,0,0,.3);}"
     "50%{box-shadow:0 0 24px rgba(0,210,255,.55);}}"
-    ".navmode{font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;"
-    "padding:7px 11px;border-radius:999px;border:1px solid rgba(255,255,255,.16);"
-    "background:rgba(255,255,255,.08);color:#cfe9f5;}"
-    ".navmode.ok{color:#8bf3b6;}.navmode.offline{color:#ffb3b8;}.navmode.wait{color:#ffd28a;}"
-    ".navmode.ring,.navmode.call,.navmode.setup{color:#9fe8ff;}"
-    ".nav{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-bottom:14px;}"
-    ".nav a{color:#cfe9f5;text-decoration:none;font-size:13px;padding:7px 12px;"
-    "border-radius:999px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);}"
-    ".nav a.on{background:linear-gradient(90deg,#00d2ff,#3a7bd5);border-color:transparent;"
-    "color:#04121c;font-weight:700;}"
-    ".status{font-size:17px;font-weight:600;color:#7fe3ff;margin:0 0 14px;}"
-    ".pill{display:inline-block;font-size:12px;padding:4px 10px;border-radius:999px;"
+    ".pill{display:inline-block;font-size:11.5px;padding:4px 10px;border-radius:999px;"
     "background:rgba(255,255,255,.1);margin:0 4px 6px 0;color:#cfe9f5;}"
     ".pill.good{background:rgba(56,239,125,.18);color:#8bf3b6;}"
     ".pill.bad{background:rgba(203,45,62,.22);color:#ffb3b8;}"
-    ".err{background:rgba(203,45,62,.22);border:1px solid #cb2d3e;border-radius:9px;"
-    "padding:10px 12px;font-size:13px;margin:0 0 12px;}"
-    ".ok{background:rgba(56,239,125,.15);border:1px solid #38ef7d;border-radius:9px;"
-    "padding:10px 12px;font-size:13px;}"
-    ".info{background:rgba(0,210,255,.12);border:1px solid rgba(0,210,255,.5);"
-    "border-radius:9px;padding:10px 12px;font-size:13px;margin-bottom:12px;}"
-    "table{width:100%;border-collapse:collapse;font-size:14px;}"
-    "td{padding:9px 4px;border-bottom:1px solid rgba(255,255,255,.1);vertical-align:middle;}"
-    ".row{display:flex;gap:10px;}.row>div{flex:1;}"
-    ".del{background:none;border:1px solid rgba(255,255,255,.2);color:#ff9aa2;"
-    "border-radius:8px;padding:5px 10px;cursor:pointer;font-size:12px;}"
-    "a.link{color:#7fe3ff;font-size:13px;}";
+    ".err{background:rgba(203,45,62,.2);border:1px solid #cb2d3e;border-radius:9px;"
+    "padding:10px 12px;font-size:12.5px;margin:0 0 12px;}"
+    ".ok{background:rgba(56,239,125,.14);border:1px solid #38ef7d;border-radius:9px;"
+    "padding:10px 12px;font-size:12.5px;}"
+    ".info{background:rgba(0,210,255,.1);border:1px solid rgba(0,210,255,.45);border-radius:9px;"
+    "padding:10px 12px;font-size:12.5px;line-height:1.5;margin-bottom:12px;}"
+    ".warn{background:rgba(255,184,0,.12);border:1px solid rgba(255,184,0,.45);border-radius:9px;"
+    "padding:10px 12px;font-size:12.5px;line-height:1.5;margin-bottom:12px;}"
+    "table{width:100%;border-collapse:collapse;font-size:13.5px;}"
+    "td{padding:9px 4px;border-bottom:1px solid rgba(255,255,255,.09);vertical-align:middle;}"
+    ".del{background:none;border:1px solid rgba(255,255,255,.2);color:#ff9aa2;border-radius:8px;"
+    "padding:5px 10px;cursor:pointer;font-size:12px;}"
+    ".foot{text-align:center;font-size:11.5px;color:#8ea4b8;padding:12px 0 2px;}"
+    "a.link{color:#7fe3ff;font-size:12.5px;text-decoration:none;}";
 
 static void pg_head(page_t *p, const char *title, int refresh_s) {
     pg_puts(p, "<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'>"
                "<meta name='viewport' content='width=device-width,initial-scale=1'>");
     if (refresh_s > 0) pg_printf(p, "<meta http-equiv='refresh' content='%d'>", refresh_s);
     pg_printf(p, "<title>%s</title><style>%s</style></head><body><div class='wrap'>", title, PAGE_CSS);
+}
+
+// ---- form field helpers: label + input + inline help ----
+static void field_label(page_t *p, const char *name, const char *label) {
+    pg_puts(p, "<div class='field'><label for='");
+    pg_puts(p, name);
+    pg_puts(p, "'>");
+    pg_puts(p, label);
+    pg_puts(p, "</label>");
+}
+
+static void field_end(page_t *p, const char *hint) {
+    if (hint) {
+        pg_puts(p, "<span class='hint'>");
+        pg_puts(p, hint);
+        pg_puts(p, "</span>");
+    }
+    pg_puts(p, "</div>");
+}
+
+// type is "text" or "password"; 0/negative maxlen omits the attribute.
+static void field_text(page_t *p, const char *name, const char *label, const char *value,
+                       const char *placeholder, const char *type, int maxlen, const char *hint) {
+    field_label(p, name, label);
+    pg_puts(p, "<input id='");
+    pg_puts(p, name);
+    pg_puts(p, "' name='");
+    pg_puts(p, name);
+    pg_printf(p, "' type='%s'", type);
+    if (maxlen > 0) pg_printf(p, " maxlength='%d'", maxlen);
+    pg_puts(p, " value='");
+    pg_escape(p, value ? value : "");
+    pg_puts(p, "' placeholder='");
+    pg_escape(p, placeholder ? placeholder : "");
+    pg_puts(p, "'>");
+    field_end(p, hint);
+}
+
+// Password inputs are never pre-filled: empty means "keep the stored value".
+static void field_password(page_t *p, const char *name, const char *label, const char *hint) {
+    field_label(p, name, label);
+    pg_puts(p, "<input id='");
+    pg_puts(p, name);
+    pg_puts(p, "' name='");
+    pg_puts(p, name);
+    pg_puts(p, "' type='password' maxlength='63' autocomplete='new-password'"
+               " placeholder='Leave empty to keep current'>");
+    field_end(p, hint);
+}
+
+static void field_select(page_t *p, const char *name, const char *label, const char *const *options,
+                         int count, int selected, const char *hint) {
+    field_label(p, name, label);
+    pg_puts(p, "<select id='");
+    pg_puts(p, name);
+    pg_puts(p, "' name='");
+    pg_puts(p, name);
+    pg_puts(p, "'>");
+    for (int i = 0; i < count; i++) {
+        pg_printf(p, "<option value='%d'%s>%s</option>", i, (i == selected) ? " selected" : "", options[i]);
+    }
+    pg_puts(p, "</select>");
+    field_end(p, hint);
+}
+
+static void field_num(page_t *p, const char *name, const char *label, int value,
+                      int min, int max, const char *hint) {
+    field_label(p, name, label);
+    pg_puts(p, "<input id='");
+    pg_puts(p, name);
+    pg_puts(p, "' name='");
+    pg_puts(p, name);
+    pg_printf(p, "' type='number' min='%d' max='%d' value='%d'>", min, max, value);
+    field_end(p, hint);
+}
+
+// Shared page footer: identifies the device and its firmware.
+static void pg_device_footer(page_t *p) {
+    esp_ip4_addr_t ip = {0};
+    char ip_str[16] = "0.0.0.0";
+    if (get_my_ip(&ip) == ESP_OK) snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ip));
+    pg_puts(p, "<div class='foot'>ESP32 SIP Voice " APP_VERSION " &middot; ");
+    pg_printf(p, "%s", ip_str);
+    pg_puts(p, " &middot; ");
+    pg_printf(p, "%s", mode_name(device_mode()));
+    pg_puts(p, "</div>");
 }
 
 static void nav_link(page_t *p, const char *href, const char *label, bool active) {
@@ -542,10 +670,10 @@ static void button_task(void *arg) {
 
 static void render_login(httpd_req_t *req, const char *error) {
     page_t p;
-    pg_init(&p, 6144);
+    pg_init(&p, PAGE_MIN_CAP);
     pg_head(&p, "Sign in - ESP32 SIP", 0);
-    pg_puts(&p, "<div class='card'><h1>ESP32 SIP</h1>"
-                "<p class='sub'>Sign in to manage this device.</p>");
+    pg_puts(&p, "<div class='card'><h1>ESP32 SIP Voice</h1>"
+                "<p class='sub'>Sign in to check the phone status or change its settings.</p>");
     if (error) {
         pg_puts(&p, "<div class='err'>");
         pg_escape(&p, error);
@@ -556,12 +684,16 @@ static void render_login(httpd_req_t *req, const char *error) {
                     "admin / esp32sip - change it on the Settings page once this device is on "
                     "your own network, because anyone in radio range can reach this page.</div>");
     }
-    pg_puts(&p, "<form method='POST' action='/login'>"
-                "<label>Username</label>"
-                "<input type='text' name='user' autocomplete='username' autofocus>"
-                "<label>Password</label>"
-                "<input type='password' name='pass' autocomplete='current-password'>"
-                "<button class='btn' type='submit'>Sign in</button></form></div>");
+    pg_puts(&p, "<form method='POST' action='/login'><div class='fields'>"
+                "<div class='field'><label for='user'>Username</label>"
+                "<input id='user' name='user' type='text' maxlength='31' placeholder='admin' "
+                "autocomplete='username' autofocus></div>"
+                "<div class='field'><label for='pass'>Password</label>"
+                "<input id='pass' name='pass' type='password' maxlength='63' "
+                "autocomplete='current-password'></div>"
+                "</div><button class='btn' type='submit' style='margin-top:14px'>Sign in"
+                "</button></form></div>");
+    pg_device_footer(&p);
     pg_foot(&p);
     send_page(req, &p);
 }
@@ -663,7 +795,10 @@ static void render_mode_card(page_t *p, device_mode_t mode, const char *remote_u
                        "username and password.");
             break;
         case MODE_IDLE:
-            pg_puts(p, "Registered and idle - ready to place or receive a call.");
+            pg_puts(p, speaker_mode()
+                           ? "Registered and idle. Speaker mode: incoming calls are picked up "
+                             "automatically."
+                           : "Registered and idle - ready to place or receive a call.");
             break;
         case MODE_INCOMING:
             pg_puts(p, "An inbound call is ringing");
@@ -671,7 +806,16 @@ static void render_mode_card(page_t *p, device_mode_t mode, const char *remote_u
                 pg_puts(p, " from ");
                 pg_escape(p, remote_uri);
             }
-            pg_puts(p, ".");
+            if (speaker_mode()) {
+                uint8_t delay = g_settings ? g_settings->auto_answer_delay_s : 0;
+                if (delay == 0) {
+                    pg_puts(p, " - picking it up now (speaker mode).");
+                } else {
+                    pg_printf(p, " - picking it up in %u s (speaker mode).", (unsigned)delay);
+                }
+            } else {
+                pg_puts(p, ".");
+            }
             break;
         case MODE_OUTGOING:
             pg_puts(p, "Dialling ");
@@ -710,11 +854,14 @@ static esp_err_t index_get_handler(httpd_req_t *req) {
 
     // Poll a bit faster while a call is ringing so Answer shows up promptly.
     page_t p;
-    pg_init(&p, 12288);
+    pg_init(&p, PAGE_MIN_CAP);
     pg_head(&p, "ESP32 SIP Phone", (mode == MODE_INCOMING) ? 3 : 5);
     pg_nav(&p, "call");
 
+    pg_puts(&p, "<div class='grid'>");
+    pg_puts(&p, "<div class='wide'>");
     render_mode_card(&p, mode, remote);
+    pg_puts(&p, "</div>");
 
     EventBits_t bits = app_event_group ? xEventGroupGetBits(app_event_group) : 0;
     bool wifi_up = (bits & WIFI_CONNECTED_BIT) != 0;
@@ -766,7 +913,16 @@ static esp_err_t index_get_handler(httpd_req_t *req) {
         pg_puts(&p, "</div><a class='btn' href='/setup'>Open settings</a>");
     }
 
-    pg_puts(&p, "<h2 style='margin-top:18px'>Device</h2>");
+    pg_puts(&p, "</div>");
+
+    pg_puts(&p, "<div class='card'><h2>Device</h2>"
+                "<p class='hint' style='margin:0 0 10px'>Capabilities compiled into this firmware."
+                "</p>");
+    pg_printf(&p, "<span class='pill'>Mode: %s</span>", role_name());
+    if (speaker_mode() && g_settings && g_settings->auto_answer_delay_s > 0) {
+        pg_printf(&p, "<span class='pill'>Auto-answer +%u s</span>",
+                  (unsigned)g_settings->auto_answer_delay_s);
+    }
     pg_printf(&p, "<span class='pill'>%s</span>", profile_name());
     pg_printf(&p, "<span class='pill'>%s</span>", audio_name());
     pg_printf(&p, "<span class='pill'>%s</span>", control_name());
@@ -776,7 +932,9 @@ static esp_err_t index_get_handler(httpd_req_t *req) {
     pg_puts(&p, "<span class='pill'>Wake word off</span>");
 #endif
     pg_puts(&p, "</div>");
+    pg_puts(&p, "</div>"); // .grid
 
+    pg_device_footer(&p);
     pg_foot(&p);
     send_page(req, &p);
     return ESP_OK;
@@ -787,65 +945,124 @@ static esp_err_t setup_get_handler(httpd_req_t *req) {
     if (!require_login(req)) return ESP_OK;
 
     page_t p;
-    pg_init(&p, 12288);
+    pg_init(&p, PAGE_MIN_CAP);
     pg_head(&p, "Settings - ESP32 SIP", 0);
     pg_nav(&p, "setup");
 
-    pg_puts(&p, "<div class='card'><h1>Settings</h1>"
-                "<p class='sub'>Leave a password field empty to keep the stored value. "
-                "SIP and login changes apply immediately (no restart); only Wi-Fi changes "
-                "restart the device.</p>");
+    pg_puts(&p, "<h1>Settings</h1>"
+                "<p class='sub'>Network and SIP account for this phone. Password fields are never "
+                "shown again: leave them empty to keep the stored value.</p>");
+
     if (wifi_is_ap_mode()) {
-        pg_puts(&p, "<div class='info'>Setup mode: the device is not connected to Wi-Fi yet, so "
-                    "Wi-Fi changes here restart it. Web access credentials can only be changed "
-                    "once the device is on your own network.</div>");
+        pg_puts(&p, "<div class='info'><b>Setup mode.</b> This device is broadcasting its own open "
+                    "access point. Fill in Wi-Fi and the SIP account, save, and it will connect. "
+                    "Web login credentials can only be changed once it is on your own network."
+                    "</div>");
     }
-    pg_puts(&p, "<form method='POST' action='/setup'>");
+
+    pg_puts(&p, "<form method='POST' action='/setup'><div class='grid'>");
+
+    // --- Mode (device role) + audio hardware ---
+    static const char *roles[] = {
+        "Phone - ring and answer manually",
+        "Speaker - answer incoming calls automatically",
+    };
+    static const char *audio_outs[] = {
+        "Auto - detect the I2C codec, else plain I2S",
+        "Plain I2S amp - MAX98357A / PCM5102 (no control bus)",
+        "I2C codec - ES8388 / ES8311",
+    };
+    pg_puts(&p, "<div class='card'><h2>Mode &amp; audio</h2>"
+                "<p class='hint' style='margin:0 0 12px'>How this device behaves when somebody "
+                "calls it, and which audio hardware it drives.</p>"
+                "<div class='fields'>");
+    field_select(&p, "role", "Device mode", roles, 2, g_settings->device_role,
+                 "<b>Phone</b> rings until somebody answers on the keypad, screen or this page. "
+                 "<b>Speaker</b> picks up by itself: ideal for paging, intercom and doorbell use.");
+    field_num(&p, "auto_answer_delay", "Auto-answer delay (s)",
+              g_settings->auto_answer_delay_s, 0, AUTO_ANSWER_DELAY_MAX,
+              "Speaker mode only: 0 answers immediately, up to 30 s gives people time to move away "
+              "from the speaker.");
+    field_select(&p, "audio_out", "Audio output", audio_outs, 3, g_settings->audio_out,
+                 "<b>Plain I2S amp</b> for MAX98357A, PCM5102, UDA1334 and similar DACs that have "
+                 "no control bus (volume is then scaled in software). <b>I2C codec</b> for ES8388/"
+                 "ES8311 modules. <b>Auto</b> picks the codec when I2C pins are wired and it "
+                 "answers, otherwise a plain amp. Changing this restarts the device.");
+    pg_puts(&p, "</div></div>");
 
     // --- Wi-Fi ---
-    pg_puts(&p, "<h2>Wi-Fi</h2><label>Network name (SSID)</label>");
-    pg_puts(&p, "<input type='text' name='ssid' maxlength='31' value='");
-    pg_escape(&p, g_settings->wifi_ssid);
-    pg_puts(&p, "' placeholder='Your Wi-Fi SSID'>");
-    pg_puts(&p, "<label>Wi-Fi password</label>"
-                "<input type='password' name='wifi_pass' maxlength='63' placeholder='Leave empty to keep current'>");
+    pg_puts(&p, "<div class='card'><h2>Wi-Fi</h2>"
+                "<p class='hint' style='margin:0 0 12px'>The network this phone joins. "
+                "Changing it restarts the device.</p>"
+                "<div class='fields'>");
+    field_text(&p, "ssid", "Network name (SSID)", g_settings->wifi_ssid,
+               "e.g. HomeNetwork", "text", 31,
+               "2.4 GHz network name. The ESP32 cannot join 5 GHz-only networks.");
+    field_password(&p, "wifi_pass", "Wi-Fi password",
+                   "Stored in NVS on the device. Empty keeps the current one.");
+    pg_puts(&p, "</div></div>");
+
+    // --- SIP server ---
+    pg_puts(&p, "<div class='card'><h2>SIP server</h2>"
+                "<p class='hint' style='margin:0 0 12px'>The PBX or provider this phone registers "
+                "with (Asterisk, FreePBX, antisip, ...).</p>"
+                "<div class='fields'>");
+    field_text(&p, "sip_server", "Server", g_settings->sip_server,
+               "192.168.1.100 or sip.provider.com", "text", 63,
+               "IP address or hostname of the SIP server.");
+    field_num(&p, "sip_port", "Port",
+              (int)(g_settings->sip_port ? g_settings->sip_port : SIP_SERVER_PORT), 1, 65535,
+              "Usually 5060 (UDP).");
+    field_text(&p, "sip_domain", "Domain / realm", g_settings->sip_domain,
+               "Defaults to the server", "text", 63,
+               "Used in the From/To headers and digest auth. Empty = use the server.");
+    pg_puts(&p, "</div></div>");
 
     // --- SIP account ---
-    pg_puts(&p, "<h2 style='margin-top:22px'>SIP account</h2>"
-                "<label>SIP server (IP or domain)</label><input type='text' name='sip_server' maxlength='63' value='");
-    pg_escape(&p, g_settings->sip_server);
-    pg_puts(&p, "' placeholder='sip.provider.com'>");
-    pg_puts(&p, "<div class='row'><div><label>SIP port</label><input type='number' name='sip_port' min='1' max='65535' value='");
-    pg_printf(&p, "%u", (unsigned)(g_settings->sip_port ? g_settings->sip_port : SIP_SERVER_PORT));
-    pg_puts(&p, "'></div><div><label>Domain / realm</label><input type='text' name='sip_domain' maxlength='63' value='");
-    pg_escape(&p, g_settings->sip_domain);
-    pg_puts(&p, "' placeholder='Defaults to server'></div></div>");
-    pg_puts(&p, "<label>Auth username</label><input type='text' name='sip_user' maxlength='63' value='");
-    pg_escape(&p, g_settings->sip_user);
-    pg_puts(&p, "' placeholder='1000'>");
-    pg_puts(&p, "<label>Auth password</label>"
-                "<input type='password' name='sip_pass' maxlength='63' placeholder='Leave empty to keep current'>");
-    pg_puts(&p, "<label>Display name</label><input type='text' name='display_name' maxlength='31' value='");
-    pg_escape(&p, g_settings->sip_display_name);
-    pg_puts(&p, "' placeholder='ESP32 Phone'>");
-    pg_puts(&p, "<label>Default call target</label><input type='text' name='sip_target' maxlength='63' value='");
-    pg_escape(&p, g_settings->sip_target);
-    pg_puts(&p, "' placeholder='sip:1001@192.168.1.100'>");
+    pg_puts(&p, "<div class='card'><h2>SIP account</h2>"
+                "<p class='hint' style='margin:0 0 12px'>The credentials this phone authenticates "
+                "with. Saving re-registers immediately, no restart.</p>"
+                "<div class='fields'>");
+    field_text(&p, "sip_user", "Auth username", g_settings->sip_user, "1000", "text", 63,
+               "Extension or account name assigned by the server.");
+    field_password(&p, "sip_pass", "Auth password",
+                   "Leave empty to keep the stored password.");
+    field_text(&p, "display_name", "Display name", g_settings->sip_display_name,
+               "ESP32 Phone", "text", 31,
+               "Name shown to the other party as the caller.");
+    pg_puts(&p, "</div></div>");
+
+    // --- Calling ---
+    pg_puts(&p, "<div class='card'><h2>Calling</h2>"
+                "<p class='hint' style='margin:0 0 12px'>What the physical button, the wake word "
+                "and the web <b>Call</b> button dial.</p>"
+                "<div class='fields'>");
+    field_text(&p, "sip_target", "Default call target", g_settings->sip_target,
+               "sip:1001@192.168.1.100", "text", 63,
+               "Full SIP URI, e.g. sip:1001@192.168.1.100 or sip:reception@provider.com.");
+    pg_puts(&p, "</div></div>");
 
     // --- Web access ---
     if (!wifi_is_ap_mode()) {
-        pg_puts(&p, "<h2 style='margin-top:22px'>Web access</h2>"
-                    "<label>Login username</label><input type='text' name='web_user' maxlength='31' value='");
-        pg_escape(&p, g_settings->web_user);
-        pg_puts(&p, "' placeholder='admin'>");
-        pg_puts(&p, "<label>Login password</label>"
-                    "<input type='password' name='web_pass' maxlength='63' placeholder='Leave empty to keep current'>");
-    } else {
-        pg_puts(&p, "<div class='info'><b>Web access</b> is disabled in setup mode: finish "
-                    "this setup, then change the default login from your own network.</div>");
+        pg_puts(&p, "<div class='card'><h2>Web access</h2>"
+                    "<p class='hint' style='margin:0 0 12px'>Credentials for this web interface. "
+                    "Changing them does not sign you out here.</p>"
+                    "<div class='fields'>");
+        field_text(&p, "web_user", "Login username", g_settings->web_user, "admin", "text", 31,
+                   "Used together with the login password on the sign-in page.");
+        field_password(&p, "web_pass", "Login password",
+                       "Change the factory default as soon as the device is on your network.");
+        pg_puts(&p, "</div></div>");
     }
 
-    pg_puts(&p, "<button class='btn' type='submit'>Save settings</button></form></div>");
+    // --- Save ---
+    pg_puts(&p, "<div class='wide'><div class='savebar'>"
+                "<button class='btn' type='submit'>Save settings</button>"
+                "<span class='hint'>SIP account and login changes apply immediately. Wi-Fi changes "
+                "restart the device.</span></div></div>");
+    pg_puts(&p, "</div></form>"); // .grid
+
+    pg_device_footer(&p);
     pg_foot(&p);
     send_page(req, &p);
     return ESP_OK;
@@ -868,7 +1085,7 @@ static esp_err_t setup_post_handler(httpd_req_t *req) {
     app_settings_t updated = *g_settings;
     // Which group of settings changed decides how (and whether) we restart.
     bool wifi_changed = false, sip_changed = false, web_changed = false;
-    bool too_long = false;
+    bool mode_changed = false, audio_changed = false, too_long = false;
 
     apply_field(buf, "ssid",         updated.wifi_ssid,        sizeof(updated.wifi_ssid),        false, &wifi_changed, &too_long);
     apply_field(buf, "wifi_pass",    updated.wifi_password,    sizeof(updated.wifi_password),    false, &wifi_changed, &too_long);
@@ -896,18 +1113,46 @@ static esp_err_t setup_post_handler(httpd_req_t *req) {
         }
     }
 
-    bool changed = wifi_changed || sip_changed || web_changed;
+    // Device role: affects the next incoming call, no restart.
+    if (form_get(buf, "role", v, sizeof(v)) && v[0]) {
+        int role = atoi(v);
+        if (role >= DEVICE_ROLE_PHONE && role <= DEVICE_ROLE_SPEAKER &&
+            (uint8_t)role != updated.device_role) {
+            updated.device_role = (uint8_t)role;
+            mode_changed = true;
+        }
+    }
+    if (form_get(buf, "auto_answer_delay", v, sizeof(v)) && v[0]) {
+        int delay = atoi(v);
+        if (delay >= 0 && delay <= AUTO_ANSWER_DELAY_MAX &&
+            (uint8_t)delay != updated.auto_answer_delay_s) {
+            updated.auto_answer_delay_s = (uint8_t)delay;
+            mode_changed = true;
+        }
+    }
+
+    // Audio backend: needs a fresh codec/I2S init, so this one restarts too.
+    if (form_get(buf, "audio_out", v, sizeof(v)) && v[0]) {
+        int ao = atoi(v);
+        if (ao >= AUDIO_OUT_AUTO && ao <= AUDIO_OUT_ES8388 && (uint8_t)ao != updated.audio_out) {
+            updated.audio_out = (uint8_t)ao;
+            audio_changed = true;
+        }
+    }
+
+    bool changed = wifi_changed || sip_changed || web_changed || mode_changed || audio_changed;
 
     if (too_long) {
         page_t p;
-        pg_init(&p, 2048);
+        pg_init(&p, PAGE_MIN_CAP);
         pg_head(&p, "Settings - ESP32 SIP", 0);
         pg_nav(&p, "setup");
         pg_puts(&p, "<div class='card'><h1>Value too long</h1>"
-                    "<p class='sub'>One of the values you entered is too long for its field, so "
-                    "nothing was saved. Shorten it and try again (usernames and passwords must "
-                    "fit in 63 characters, the SSID in 31).</p>"
+                    "<p class='sub'>One of the values you entered does not fit its field, so "
+                    "nothing was saved. Shorten it and try again: usernames, passwords, server "
+                    "and call target allow 63 characters, the SSID and display name 31.</p>"
                     "<a class='link' href='/setup'>&laquo; Back to settings</a></div>");
+        pg_device_footer(&p);
         pg_foot(&p);
         send_page(req, &p);
         free(buf);
@@ -915,12 +1160,14 @@ static esp_err_t setup_post_handler(httpd_req_t *req) {
     }
     if (!changed) {
         page_t p;
-        pg_init(&p, 2048);
+        pg_init(&p, PAGE_MIN_CAP);
         pg_head(&p, "Settings - ESP32 SIP", 0);
         pg_nav(&p, "setup");
-        pg_puts(&p, "<div class='card'><h1>Nothing to save</h1>"
-                    "<p class='sub'>No field was filled in, so the stored configuration "
-                    "was left untouched.</p><a class='link' href='/setup'>&laquo; Back to settings</a></div>");
+        pg_puts(&p, "<div class='card'><h1>No changes</h1>"
+                    "<p class='sub'>Everything you submitted already matches the saved "
+                    "configuration, so nothing was written and the device keeps running.</p>"
+                    "<a class='link' href='/setup'>&laquo; Back to settings</a></div>");
+        pg_device_footer(&p);
         pg_foot(&p);
         send_page(req, &p);
         free(buf);
@@ -932,9 +1179,10 @@ static esp_err_t setup_post_handler(httpd_req_t *req) {
     ESP_LOGI(TAG, "Settings updated from web UI (sip_server='%s', sip_user='%s')",
              g_settings->sip_server, g_settings->sip_user);
 
-    // Wi-Fi needs a fresh association and the AP/setup path has no SIP client,
-    // so those cases still restart. SIP + web credentials apply in place.
-    bool need_reboot = wifi_changed || wifi_is_ap_mode();
+    // Wi-Fi needs a fresh association, the audio backend a fresh codec/I2S init,
+    // and the AP/setup path has no SIP client, so those still restart.
+    // SIP account, device mode and web credentials apply in place.
+    bool need_reboot = wifi_changed || audio_changed || wifi_is_ap_mode();
     bool sip_applied = false;
     if (!need_reboot && sip_changed && g_sip_client) {
         sip_applied = (sip_client_reload(g_sip_client) == ESP_OK);
@@ -942,12 +1190,13 @@ static esp_err_t setup_post_handler(httpd_req_t *req) {
 
     page_t p;
     if (need_reboot) {
-        pg_init(&p, 3072);
+        pg_init(&p, PAGE_MIN_CAP);
         pg_head(&p, "Restarting - ESP32 SIP", 0);
         pg_nav(&p, "setup");
         pg_puts(&p, "<div class='card'><h1>Settings saved</h1>"
-                    "<p class='sub'>Wi-Fi changes need a restart. The device will reconnect "
-                    "with the new configuration...</p>"
+                    "<p class='sub'>The network settings changed, so the device restarts to join "
+                    "the new Wi-Fi. This page can be closed; reconnect to the device on its new "
+                    "address once it is back.</p>"
                     "<div class='ok'>Rebooting...</div></div>");
         pg_foot(&p);
         send_page(req, &p);
@@ -957,10 +1206,15 @@ static esp_err_t setup_post_handler(httpd_req_t *req) {
         return ESP_OK;
     }
 
-    pg_init(&p, 3072);
+    pg_init(&p, PAGE_MIN_CAP);
     pg_head(&p, "Settings - ESP32 SIP", 0);
     pg_nav(&p, "setup");
     pg_puts(&p, "<div class='card'><h1>Settings saved</h1>");
+    if (mode_changed) {
+        pg_puts(&p, "<p class='sub'>Device mode updated: ");
+        pg_escape(&p, role_name());
+        pg_puts(&p, ". It applies to the next incoming call.</p>");
+    }
     if (sip_applied) {
         pg_puts(&p, "<p class='sub'>The SIP account was updated and the device is "
                     "re-registering now. If a call was in progress, the new account is "
@@ -975,7 +1229,8 @@ static esp_err_t setup_post_handler(httpd_req_t *req) {
     }
     pg_puts(&p, "<div class='ok'>No restart required</div>"
                 "<a class='link' href='/' style='display:inline-block;margin-top:12px'>"
-                "&laquo; Back to phone</a></div>");
+                "&laquo; Back to phone status</a></div>");
+    pg_device_footer(&p);
     pg_foot(&p);
     send_page(req, &p);
     free(buf);
@@ -1001,12 +1256,15 @@ static esp_err_t phonebook_get_handler(httpd_req_t *req) {
     if (!require_login(req)) return ESP_OK;
 
     page_t p;
-    pg_init(&p, 8192);
+    pg_init(&p, PAGE_MIN_CAP);
     pg_head(&p, "Phonebook - ESP32 SIP", 0);
     pg_nav(&p, "phonebook");
-    pg_puts(&p, "<div class='card'><h1>Phonebook</h1>"
-                "<p class='sub'>Speed dial slots 0-9, stored in NVS.</p>");
+    pg_puts(&p, "<h1>Phonebook</h1>"
+                "<p class='sub'>Speed dial slots 0-9, stored in NVS on the device. The physical "
+                "button and the keypad dial the entry matching the slot number.</p>"
+                "<div class='grid'>");
 
+    pg_puts(&p, "<div class='card'><h2>Saved entries</h2>");
     phonebook_entry_t entry;
     bool any = false;
     pg_puts(&p, "<table>");
@@ -1023,15 +1281,24 @@ static esp_err_t phonebook_get_handler(httpd_req_t *req) {
         pg_puts(&p, "<button class='del' type='submit'>Delete</button></form></td></tr>");
     }
     pg_puts(&p, "</table>");
-    if (!any) pg_puts(&p, "<p class='sub'>No entries yet.</p>");
+    if (!any) pg_puts(&p, "<p class='sub' style='margin:0'>No entries saved yet.</p>");
+    pg_puts(&p, "</div>");
 
-    pg_puts(&p, "<h2 style='margin-top:22px'>Add / replace entry</h2>"
-                "<form method='POST' action='/pb_add'>"
-                "<label>Name</label><input type='text' name='name' placeholder='Front door'>"
-                "<div class='row'><div><label>SIP URI</label>"
-                "<input type='text' name='uri' placeholder='sip:1000@192.168.1.10'></div>"
-                "<div><label>Slot</label><input type='number' name='id' min='0' max='9' value='0'></div></div>"
-                "<button class='btn' type='submit'>Save entry</button></form></div>");
+    pg_puts(&p, "<div class='card'><h2>Add or replace</h2>"
+                "<p class='hint' style='margin:0 0 12px'>Saving into an occupied slot overwrites "
+                "that entry.</p>"
+                "<form method='POST' action='/pb_add'><div class='fields'>");
+    field_text(&p, "name", "Name", "", "Front door", "text", MAX_NAME_LEN - 1,
+               "Shown on the screen and in this list.");
+    field_text(&p, "uri", "SIP URI", "", "sip:1000@192.168.1.10", "text", MAX_URI_LEN - 1,
+               "Full SIP URI to dial for this contact.");
+    field_num(&p, "id", "Speed dial slot", 0, 0, MAX_PHONEBOOK_ENTRIES - 1,
+              "Slot number 0-9.");
+    pg_puts(&p, "</div><button class='btn' type='submit' style='margin-top:14px'>Save entry"
+                "</button></form></div>");
+    pg_puts(&p, "</div>"); // .grid
+
+    pg_device_footer(&p);
     pg_foot(&p);
     send_page(req, &p);
     return ESP_OK;
@@ -1073,11 +1340,9 @@ static esp_err_t pb_del_post_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
-static void hw_pin_field(page_t *p, const char *label, const char *name, int8_t value) {
-    pg_puts(p, "<label>");
-    pg_puts(p, label);
-    pg_puts(p, "</label>");
-    pg_printf(p, "<input type='number' name='%s' min='-1' max='48' value='%d'>", name, value);
+// One editable GPIO: label, number input and a short explanation.
+static void hw_pin_field(page_t *p, const char *name, const char *label, int8_t value, const char *hint) {
+    field_num(p, name, label, value, -1, 48, hint);
 }
 
 static esp_err_t hardware_get_handler(httpd_req_t *req) {
@@ -1087,42 +1352,79 @@ static esp_err_t hardware_get_handler(httpd_req_t *req) {
     config_manager_load_hw(&hw);
 
     page_t p;
-    pg_init(&p, 12288);
+    pg_init(&p, PAGE_MIN_CAP);
     pg_head(&p, "Hardware - ESP32 SIP", 0);
     pg_nav(&p, "hardware");
-    pg_puts(&p, "<div class='card'><h1>Hardware</h1>"
-                "<p class='sub'>GPIO map and display theme. Use -1 for \"not connected\". "
-                "Saving restarts the device.</p><form method='POST' action='/hardware'>");
+    pg_puts(&p, "<h1>Hardware</h1>"
+                "<p class='sub'>GPIO wiring for this board. Every value is a GPIO number; use "
+                "<b>-1</b> for anything that is not wired. Saving restarts the device.</p>"
+                "<div class='warn'>Wrong pins leave the display or the audio silent. Change one "
+                "group at a time and check the serial log if a peripheral stops working. Blank "
+                "fields keep the stored value.</div>"
+                "<form method='POST' action='/hardware'><div class='grid'>");
 
-    pg_puts(&p, "<h2>I2S audio</h2>");
-    hw_pin_field(&p, "BCLK", "bck", hw.pin_i2s_bck);
-    hw_pin_field(&p, "LRCLK / WS", "ws", hw.pin_i2s_ws);
-    hw_pin_field(&p, "Data out (DAC)", "dout", hw.pin_i2s_dout);
-    hw_pin_field(&p, "Data in (MIC)", "din", hw.pin_i2s_din);
-    hw_pin_field(&p, "Master clock (MCLK)", "mclk", hw.pin_i2s_mclk);
+    pg_puts(&p, "<div class='card'><h2>I2S audio</h2>"
+                "<p class='hint' style='margin:0 0 12px'>Digital audio link to the microphone and "
+                "speaker or codec (INMP441 + MAX98357A, ES8388, ...).</p>"
+                "<div class='fields pins'>");
+    hw_pin_field(&p, "bck", "Bit clock (BCLK)", hw.pin_i2s_bck, NULL);
+    hw_pin_field(&p, "ws", "Frame clock (LRCLK/WS)", hw.pin_i2s_ws, NULL);
+    hw_pin_field(&p, "dout", "Data out (DAC)", hw.pin_i2s_dout, "Audio towards the speaker/codec.");
+    hw_pin_field(&p, "din", "Data in (MIC)", hw.pin_i2s_din, "Audio from the microphone.");
+    hw_pin_field(&p, "mclk", "Master clock (MCLK)", hw.pin_i2s_mclk,
+                 "Only codecs that need MCLK (e.g. ES8388); otherwise -1.");
+    pg_puts(&p, "</div></div>");
 
-    pg_puts(&p, "<h2 style='margin-top:22px'>I2C control</h2>");
-    hw_pin_field(&p, "SDA", "sda", hw.pin_i2c_sda);
-    hw_pin_field(&p, "SCL", "scl", hw.pin_i2c_scl);
+    pg_puts(&p, "<div class='card'><h2>I2C control</h2>"
+                "<p class='hint' style='margin:0 0 12px'>Control bus used by I2C audio codecs "
+                "(ES8388/ES8311) and I2C keypads or OLEDs.</p>"
+                "<div class='fields pins'>");
+    hw_pin_field(&p, "sda", "Data (SDA)", hw.pin_i2c_sda, NULL);
+    hw_pin_field(&p, "scl", "Clock (SCL)", hw.pin_i2c_scl, NULL);
+    pg_puts(&p, "</div></div>");
 
-    pg_puts(&p, "<h2 style='margin-top:22px'>SPI display &amp; touch</h2>");
-    hw_pin_field(&p, "SPI MOSI", "spi_mosi", hw.pin_spi_mosi);
-    hw_pin_field(&p, "SPI MISO", "spi_miso", hw.pin_spi_miso);
-    hw_pin_field(&p, "SPI clock", "spi_clk", hw.pin_spi_clk);
-    hw_pin_field(&p, "TFT CS", "tft_cs", hw.pin_tft_cs);
-    hw_pin_field(&p, "TFT DC", "tft_dc", hw.pin_tft_dc);
-    hw_pin_field(&p, "TFT reset", "tft_rst", hw.pin_tft_rst);
-    hw_pin_field(&p, "Touch CS", "touch_cs", hw.pin_touch_cs);
-    hw_pin_field(&p, "Touch IRQ", "touch_irq", hw.pin_touch_irq);
+    pg_puts(&p, "<div class='card'><h2>Display (SPI)</h2>"
+                "<p class='hint' style='margin:0 0 12px'>SPI bus for the ST7789, ILI9341 or "
+                "GC9A01 panel.</p>"
+                "<div class='fields pins'>");
+    hw_pin_field(&p, "spi_mosi", "Data (MOSI)", hw.pin_spi_mosi,
+                 "Panel data input - usually the SDI/SDA pad of the module.");
+    hw_pin_field(&p, "spi_miso", "Data (MISO)", hw.pin_spi_miso,
+                 "Most panels do not drive this line; keep -1.");
+    hw_pin_field(&p, "spi_clk", "Clock (SCLK)", hw.pin_spi_clk, NULL);
+    hw_pin_field(&p, "tft_cs", "Chip select (CS)", hw.pin_tft_cs, NULL);
+    hw_pin_field(&p, "tft_dc", "Data/command (DC)", hw.pin_tft_dc,
+                 "Sometimes labelled RS or A0 on the module.");
+    hw_pin_field(&p, "tft_rst", "Reset (RST)", hw.pin_tft_rst,
+                 "Reset line of the panel; -1 if tied to EN.");
+    pg_puts(&p, "</div></div>");
 
-    pg_puts(&p, "<h2 style='margin-top:22px'>Display theme</h2>"
-                "<select name='ui_theme'>");
+    pg_puts(&p, "<div class='card'><h2>Touch</h2>"
+                "<p class='hint' style='margin:0 0 12px'>XPT2046 resistive touch controller "
+                "(shares the display SPI bus).</p>"
+                "<div class='fields pins'>");
+    hw_pin_field(&p, "touch_cs", "Touch CS", hw.pin_touch_cs,
+                 "Separate chip select for the touch controller.");
+    hw_pin_field(&p, "touch_irq", "Touch IRQ", hw.pin_touch_irq,
+                 "Pen-down interrupt; optional (-1 polls instead).");
+    pg_puts(&p, "</div></div>");
+
+    pg_puts(&p, "<div class='card wide'><h2>Display theme</h2>"
+                "<p class='hint' style='margin:0 0 12px'>Look of the on-device screen. The theme "
+                "is drawn by LVGL and applied after the restart.</p><div class='fields'>");
     static const char *themes[] = { "Voice Assistant", "Mobile OS", "Smart Speaker" };
-    for (int i = 0; i < 3; i++) {
-        pg_printf(&p, "<option value='%d'%s>%s</option>", i,
-                  hw.ui_theme == i ? " selected" : "", themes[i]);
-    }
-    pg_puts(&p, "</select><button class='btn' type='submit'>Save &amp; restart</button></form></div>");
+    field_select(&p, "ui_theme", "Theme", themes, 3, hw.ui_theme,
+                 "Voice Assistant shows a clock and a glowing orb, Mobile OS looks like a phone "
+                 "call screen, Smart Speaker fills the screen with a neon ring.");
+    pg_puts(&p, "</div></div>"); // .fields .card
+
+    pg_puts(&p, "<div class='wide'><div class='savebar'>"
+                "<button class='btn' type='submit'>Save GPIO map &amp; restart</button>"
+                "<span class='hint'>Every value is a GPIO number, -1 means not connected. "
+                "The device restarts so the drivers re-initialise.</span></div></div>");
+    pg_puts(&p, "</div></form>"); // .grid
+
+    pg_device_footer(&p);
     pg_foot(&p);
     send_page(req, &p);
     return ESP_OK;
@@ -1186,12 +1488,24 @@ static esp_err_t hardware_post_handler(httpd_req_t *req) {
     config_manager_save_hw(&hw);
 
     page_t p;
-    pg_init(&p, 2048);
+    pg_init(&p, PAGE_MIN_CAP);
     pg_head(&p, "Hardware - ESP32 SIP", 0);
     pg_nav(&p, "hardware");
-    pg_puts(&p, "<div class='card'><h1>Hardware saved</h1>"
-                "<p class='sub'>The device is restarting to apply the new GPIO map.</p>"
-                "<div class='ok'>Rebooting...</div></div>");
+    pg_puts(&p, "<div class='card'><h1>");
+    if (changed) {
+        pg_puts(&p, "Hardware saved</h1>"
+                    "<p class='sub'>The device is restarting so the audio, display and touch "
+                    "drivers re-initialise on the new pins.</p>"
+                    "<div class='ok'>Rebooting...</div>");
+    } else {
+        pg_puts(&p, "No changes</h1>"
+                    "<p class='sub'>The GPIO map already matched what you submitted, so nothing "
+                    "was written and the device keeps running.</p>"
+                    "<div class='ok'>No restart required</div>");
+    }
+    pg_puts(&p, "<a class='link' href='/hardware' style='display:inline-block;margin-top:12px'>"
+                "&laquo; Back to hardware</a></div>");
+    pg_device_footer(&p);
     pg_foot(&p);
     send_page(req, &p);
 
@@ -1216,6 +1530,9 @@ static void start_webserver(void) {
     config.uri_match_fn = httpd_uri_match_wildcard;
     config.max_uri_handlers = 20;
     config.lru_purge_enable = true;
+    // Handlers call into the SIP client, which only queues requests; keep some
+    // headroom anyway (the stock 4 KB is tight once page building is involved).
+    config.stack_size = 6144;
 
     if (httpd_start(&server, &config) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start HTTP server");

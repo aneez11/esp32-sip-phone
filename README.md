@@ -17,6 +17,7 @@ This project provides a robust, production-ready foundation for VoIP intercommun
 * **Graphical User Interface (LVGL)**: Full Touchscreen support (ST7789/ILI9341 via SPI) and touch controllers (e.g., XPT2046) using the industry-standard LVGL library. Includes a visual dialer, active call screen, and incoming call alerts.
 * **Edge AI Voice Activation (Wake Word)**: Integrated `esp-sr` WakeNet! The intercom constantly listens locally for a Wake Word (e.g., "Computer") to initiate a SIP call without physical interaction or cloud connectivity.
 * **PC Simulator**: Develop and test the LVGL User Interface directly on your Windows/Mac/Linux PC using the included SDL2 Simulator, without needing to flash the ESP32!
+* **Selectable Device Mode**: pick **Phone** (rings until somebody answers) or **Speaker** (auto-answers every incoming call) at runtime on the web UI — no recompile. Speaker mode turns the device into a paging/intercom endpoint and takes an optional 0-30 s pickup delay.
 * **Password-Protected Web UI**: Everything sits behind a **login page** (default `admin` / `esp32sip`, changeable in NVS). The in-device **Settings** page manages the **SIP server, port, domain, auth username/password, display name and default call target** as well as the Wi-Fi and web-login credentials — SIP/login changes are applied **without rebooting** (only Wi-Fi and GPIO changes restart the device).
 * **Hardware & Web Control**:
   * **Dynamic Hardware Config:** Change I2S, I2C, and SPI GPIO pins directly through the web interface without recompiling the firmware!
@@ -57,6 +58,8 @@ While this project is designed to be highly portable across ESP-IDF versions and
 
 The project includes a built-in lightweight HTTP server for configuration and call management.
 
+Every page shares one small inline stylesheet (no CDN, no external fonts, no JavaScript) and is mobile-first with a two-column layout on wider screens. Configuration is split into labeled sections, each field carries a one-line explanation of what it does, and long forms keep a sticky save bar in view. Pages are built into a buffer that grows only as far as the page needs, so a short page costs ~1 KB of heap. The footer identifies the firmware version, device IP and current mode.
+
 ### Login
 The first page you see is always the login page. The factory credentials are:
 
@@ -71,9 +74,14 @@ They live in `WEB_UI_USER` / `WEB_UI_PASSWORD` (`components/config_store/app_con
 ### Settings (SIP account management)
 `/setup` → the *Settings* page is reachable both in normal (station) mode and from the captive portal, and covers:
 
-* **Wi-Fi** — SSID + password (changing these restarts the device).
-* **SIP account** — server (IP or domain), port, domain/realm, **auth username**, **auth password**, display name and default call target. Saving re-registers the account **immediately, without a reboot**; if a call is in progress the new account is applied once the line goes idle, and a server name that cannot be resolved is retried with exponential backoff (5 s → 60 s).
+* **Mode** — **Phone** rings and waits for a person (keypad, on-screen buttons, web UI); **Speaker** picks up every incoming call by itself after the configured delay (0-30 s), which is what a paging speaker, room intercom or doorbell wants. Applied to the next call, no restart.
+* **Wi-Fi** — SSID + password. Changing these restarts the device (the ESP32 cannot join 5 GHz-only networks).
+* **SIP server** — server (IP or domain), port and domain/realm. The realm is only needed when the provider expects a specific one; leaving it empty uses the server address.
+* **SIP account** — **auth username**, **auth password** and display name. Saving re-registers the account **immediately, without a reboot**; if a call is in progress the new account is applied once the line goes idle, and a server name that cannot be resolved is retried with exponential backoff (5 s → 60 s).
+* **Calling** — the default call target, i.e. the SIP URI dialled by the physical button, the wake word and the web *Call* button.
 * **Web access** — the login username/password for this web interface (normal mode only, see above).
+
+Each field has a short help line underneath, so the labels (BCLK, realm, call target, …) do not need prior SIP or hardware knowledge to fill in. The *Hardware* page is grouped the same way — I2S audio, I2C control, display (SPI) and touch — with the meaning of each pin documented next to its number.
 
 Only genuinely changed fields count as a change: saving a form whose values are unchanged reports *Nothing to save* and never restarts the device. Values that do not fit their field (e.g. a password longer than 63 characters, an SSID longer than 31) are rejected instead of being silently truncated, so a saved credential always matches what was typed. On the *Hardware* page a blank pin field means "leave unchanged".
 
@@ -96,7 +104,7 @@ Once connected to Wi-Fi and registered with your SIP Server, you can control cal
 *   **Smart SIP Doorbell (Doorphone):** Connect a button to the ESP32. When pressed, it calls your smartphone via a SIP server (like Asterisk or FreePBX), allowing you to talk to the guest.
 *   **Smart Home Intercom:** Use with Home Assistant (via SIP integration) to create room-to-room intercoms or broadcast announcements.
 *   **Emergency Call Button:** A standalone Wi-Fi button that dials a predefined emergency contact or nursing station instantly.
-*   **Paging / Public Address System:** With `CTRL_METHOD_AUTO` (auto-answer) enabled, the ESP32 can be connected to an amplifier to act as an IP speaker for warehouse or office paging.
+*   **Paging / Public Address System:** set the device mode to **Speaker** (web UI → *Mode*) and connect the ESP32 to an amplifier — it becomes an IP speaker that picks up paging calls automatically. `CTRL_METHOD_AUTO` in `app_config.h` only changes which mode a fresh device starts in.
 
 ## Project Structure
 
@@ -180,6 +188,8 @@ Windows / macOS / Linux.
   * New **Settings** page (`/setup`) available in station mode as well as the captive portal: Wi-Fi, **SIP server, port, domain/realm, auth username, auth password**, display name, default call target, and the web login credentials.
   * **No reboot for SIP/login changes.** `sip_client_reload()` re-resolves the server, drops the old binding (`REGISTER` with `Expires: 0`), re-arms the registration timer and re-registers with the new account from the SIP task. Only Wi-Fi and GPIO/theme changes still restart the device.
   * Web UI refreshed: shared glass theme, navigation bar, responsive layout, escaped output, and a rewritten `Hardware` page exposing all pins (incl. SPI/TFT/touch) plus the theme selector.
+  * **Device modes:** new runtime **Phone / Speaker** role in the *Mode* card (stored in NVS). Speaker mode auto-answers incoming calls, optionally after a 0-30 s delay; the status page shows the role and what the phone is about to do.
+  * **Fixed a reset when placing a call:** building an INVITE needs ~3 KB of stack, but it ran in the caller's task (HTTP server 4 KB, button task 2 KB, FreeRTOS timer task 2 KB), which overflowed the stack and rebooted the board. All SIP signaling is now deferred to the SIP task (`SIP_ACTION_INVITE/ANSWER/HANGUP/REGISTER`), its stack was raised to 10 KB, the HTTP server to 6 KB, and the SIP loop polls every 200 ms so queued actions feel instant.
   * Hardening after review: login throttled with a timestamp-based lockout (5 failures → 30 s, no blocking sleep in the HTTP task); unchanged fields no longer count as changes (so a SIP-only save really does skip the reboot); over-length values are rejected instead of truncated; web credentials are not editable from the open setup AP; blank hardware pin fields are ignored; and a failed server lookup during reload backs off exponentially instead of polling DNS once a second.
 * **v2.3.0** - **Buildable & CI-Verified Release.** The firmware now compiles cleanly end-to-end and is build-checked automatically on every push/PR (GitHub Actions). The CI matrix builds the firmware for **ESP32** and **ESP32-S3** with ESP-IDF v5.1, plus the **SDL PC simulator** — all green.
   * Added a GitHub Actions workflow (`.github/workflows/build.yml`) that compiles firmware (esp32 / esp32s3) and the LVGL simulator.

@@ -4,78 +4,151 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Hardware - ESP32 SIP</title>
+<!-- Preview of the Hardware page built by hardware_get_handler() in main/ui_controller.c.
+     The CSS below is the same PAGE_CSS the firmware serves inline. -->
 <style>
-:root{color-scheme:dark;}
-*{box-sizing:border-box;}
-body{margin:0;min-height:100vh;font-family:"Segoe UI",system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;
-color:#eaf4fb;background:linear-gradient(135deg,#0f2027,#203a43,#2c5364);display:flex;justify-content:center;padding:18px;}
-.wrap{width:100%;max-width:440px;}
-.card{background:rgba(255,255,255,.08);backdrop-filter:blur(12px);
-border:1px solid rgba(255,255,255,.15);border-radius:16px;padding:22px;
-box-shadow:0 8px 32px rgba(0,0,0,.35);margin-bottom:14px;}
-h1{font-size:22px;margin:0 0 4px;letter-spacing:.3px;}
-h2{font-size:14px;text-transform:uppercase;letter-spacing:1px;color:#8fd6ef;margin:0 0 10px;}
-.sub{font-size:13px;color:#9fb3c6;margin:0 0 16px;line-height:1.45;}
-label{display:block;font-size:12px;letter-spacing:.4px;text-transform:uppercase;color:#a8bccd;margin:12px 0 5px;}
-input,select{width:100%;padding:11px;border-radius:9px;font-size:15px;
-border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06);color:#fff;}
-input:focus,select:focus{outline:none;border-color:#00d2ff;box-shadow:0 0 10px rgba(0,210,255,.45);}
-.btn{display:block;width:100%;padding:13px;margin-top:14px;border:0;border-radius:10px;
-color:#fff;font-size:15px;font-weight:600;cursor:pointer;background:linear-gradient(90deg,#00d2ff,#3a7bd5);}
-.btn:hover{filter:brightness(1.1);}
-.nav{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-bottom:14px;}
-.nav a{color:#cfe9f5;text-decoration:none;font-size:13px;padding:7px 12px;
-border-radius:999px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);}
+:root{color-scheme:dark;}*{box-sizing:border-box;}
+body{margin:0;min-height:100vh;padding:16px;display:flex;justify-content:center;
+font-family:"Segoe UI",system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;
+color:#eaf4fb;background:linear-gradient(135deg,#0f2027,#203a43,#2c5364);}
+.wrap{width:100%;max-width:860px;}
+.grid{display:grid;gap:14px;align-items:start;}
+.grid>.wide{grid-column:1/-1;}
+@media(min-width:760px){.grid{grid-template-columns:1fr 1fr;}}
+.card{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.14);
+border-radius:16px;padding:20px;box-shadow:0 8px 32px rgba(0,0,0,.32);margin:0 0 14px;}
+.grid>.card{margin:0;}
+h1{font-size:21px;margin:0 0 4px;letter-spacing:.3px;}
+h2{font-size:12.5px;text-transform:uppercase;letter-spacing:1.1px;color:#8fd6ef;margin:0 0 4px;}
+.sub{font-size:12.5px;color:#9fb3c6;margin:0 0 14px;line-height:1.5;}
+.hint{display:block;font-size:11.5px;line-height:1.4;color:#8fa6ba;margin:5px 0 0;}
+label{display:block;font-size:11.5px;letter-spacing:.4px;text-transform:uppercase;color:#a8bccd;margin:0 0 5px;}
+input,select{width:100%;padding:10px 11px;border-radius:9px;font-size:14.5px;color:#fff;
+border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06);}
+input:focus,select:focus{outline:none;border-color:#00d2ff;box-shadow:0 0 10px rgba(0,210,255,.4);}
+.fields{display:grid;gap:12px;}
+.fields.pins{grid-template-columns:1fr 1fr;}
+@media(min-width:540px){.fields{grid-template-columns:repeat(auto-fit,minmax(170px,1fr));}}
+.field{min-width:0;}
+.btn{display:block;width:100%;padding:12px;border:0;border-radius:10px;color:#fff;font-size:14.5px;
+font-weight:600;text-align:center;text-decoration:none;cursor:pointer;
+background:linear-gradient(90deg,#00d2ff,#3a7bd5);}
+.btn:hover{filter:brightness(1.08);}
+.savebar{position:sticky;bottom:0;z-index:5;display:flex;flex-wrap:wrap;gap:12px;align-items:center;
+background:rgba(11,26,33,.94);border:1px solid rgba(255,255,255,.16);border-radius:14px;
+padding:12px 14px;margin-top:2px;box-shadow:0 -6px 24px rgba(0,0,0,.35);}
+.savebar .btn{margin:0;flex:1;min-width:150px;}
+.savebar .hint{margin:0;flex:1.5;min-width:170px;}
+.nav{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center;margin-bottom:14px;}
+.nav a{color:#cfe9f5;text-decoration:none;font-size:12.5px;padding:7px 12px;border-radius:999px;
+background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);}
 .nav a.on{background:linear-gradient(90deg,#00d2ff,#3a7bd5);border-color:transparent;color:#04121c;font-weight:700;}
+.navmode{font-size:10.5px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;padding:7px 11px;
+border-radius:999px;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.07);color:#cfe9f5;}
+.navmode.ok{color:#8bf3b6;}
+.warn{background:rgba(255,184,0,.12);border:1px solid rgba(255,184,0,.45);border-radius:9px;
+padding:10px 12px;font-size:12.5px;line-height:1.5;margin-bottom:12px;}
+.foot{text-align:center;font-size:11.5px;color:#8ea4b8;padding:12px 0 2px;}
 </style>
 </head>
 <body>
 <div class="wrap">
-    <!-- Rendered by hardware_get_handler() in main/ui_controller.c -->
     <nav class="nav">
         <a href="/">Call</a>
         <a href="/phonebook">Phonebook</a>
         <a href="/setup">Settings</a>
         <a href="/hardware" class="on">Hardware</a>
         <a href="/logout">Logout</a>
+        <span class="navmode ok">Ready</span>
     </nav>
 
-    <div class="card">
-        <h1>Hardware</h1>
-        <p class="sub">GPIO map and display theme. Use -1 for "not connected". Saving restarts the device.</p>
+    <h1>Hardware</h1>
+    <p class="sub">GPIO wiring for this board. Every value is a GPIO number; use <b>-1</b> for
+    anything that is not wired. Saving restarts the device.</p>
+    <div class="warn">Wrong pins leave the display or the audio silent. Change one group at a time
+    and check the serial log if a peripheral stops working. Blank fields keep the stored value.</div>
 
-        <form method="POST" action="/hardware">
+    <form method="POST" action="/hardware">
+    <div class="grid">
+
+        <div class="card">
             <h2>I2S audio</h2>
-            <label>BCLK</label><input type="number" name="bck" min="-1" max="48" value="26">
-            <label>LRCLK / WS</label><input type="number" name="ws" min="-1" max="48" value="25">
-            <label>Data out (DAC)</label><input type="number" name="dout" min="-1" max="48" value="22">
-            <label>Data in (MIC)</label><input type="number" name="din" min="-1" max="48" value="21">
-            <label>Master clock (MCLK)</label><input type="number" name="mclk" min="-1" max="48" value="-1">
+            <p class="hint" style="margin:0 0 12px">Digital audio link to the microphone and speaker or codec (INMP441 + MAX98357A, ES8388, ...).</p>
+            <div class="fields pins">
+                <div class="field"><label for="bck">Bit clock (BCLK)</label><input id="bck" name="bck" type="number" min="-1" max="48" value="26"></div>
+                <div class="field"><label for="ws">Frame clock (LRCLK/WS)</label><input id="ws" name="ws" type="number" min="-1" max="48" value="25"></div>
+                <div class="field"><label for="dout">Data out (DAC)</label><input id="dout" name="dout" type="number" min="-1" max="48" value="22">
+                    <span class="hint">Audio towards the speaker/codec.</span></div>
+                <div class="field"><label for="din">Data in (MIC)</label><input id="din" name="din" type="number" min="-1" max="48" value="21">
+                    <span class="hint">Audio from the microphone.</span></div>
+                <div class="field"><label for="mclk">Master clock (MCLK)</label><input id="mclk" name="mclk" type="number" min="-1" max="48" value="-1">
+                    <span class="hint">Only codecs that need MCLK (e.g. ES8388); otherwise -1.</span></div>
+            </div>
+        </div>
 
-            <h2 style="margin-top:22px">I2C control</h2>
-            <label>SDA</label><input type="number" name="sda" min="-1" max="48" value="19">
-            <label>SCL</label><input type="number" name="scl" min="-1" max="48" value="18">
+        <div class="card">
+            <h2>I2C control</h2>
+            <p class="hint" style="margin:0 0 12px">Control bus used by I2C audio codecs (ES8388/ES8311) and I2C keypads or OLEDs.</p>
+            <div class="fields pins">
+                <div class="field"><label for="sda">Data (SDA)</label><input id="sda" name="sda" type="number" min="-1" max="48" value="19"></div>
+                <div class="field"><label for="scl">Clock (SCL)</label><input id="scl" name="scl" type="number" min="-1" max="48" value="18"></div>
+            </div>
+        </div>
 
-            <h2 style="margin-top:22px">SPI display &amp; touch</h2>
-            <label>SPI MOSI</label><input type="number" name="spi_mosi" min="-1" max="48" value="23">
-            <label>SPI MISO</label><input type="number" name="spi_miso" min="-1" max="48" value="-1">
-            <label>SPI clock</label><input type="number" name="spi_clk" min="-1" max="48" value="18">
-            <label>TFT CS</label><input type="number" name="tft_cs" min="-1" max="48" value="15">
-            <label>TFT DC</label><input type="number" name="tft_dc" min="-1" max="48" value="2">
-            <label>TFT reset</label><input type="number" name="tft_rst" min="-1" max="48" value="4">
-            <label>Touch CS</label><input type="number" name="touch_cs" min="-1" max="48" value="14">
-            <label>Touch IRQ</label><input type="number" name="touch_irq" min="-1" max="48" value="27">
+        <div class="card">
+            <h2>Display (SPI)</h2>
+            <p class="hint" style="margin:0 0 12px">SPI bus for the ST7789, ILI9341 or GC9A01 panel.</p>
+            <div class="fields pins">
+                <div class="field"><label for="spi_mosi">Data (MOSI)</label><input id="spi_mosi" name="spi_mosi" type="number" min="-1" max="48" value="23">
+                    <span class="hint">Panel data input - usually the SDI/SDA pad of the module.</span></div>
+                <div class="field"><label for="spi_miso">Data (MISO)</label><input id="spi_miso" name="spi_miso" type="number" min="-1" max="48" value="-1">
+                    <span class="hint">Most panels do not drive this line; keep -1.</span></div>
+                <div class="field"><label for="spi_clk">Clock (SCLK)</label><input id="spi_clk" name="spi_clk" type="number" min="-1" max="48" value="18"></div>
+                <div class="field"><label for="tft_cs">Chip select (CS)</label><input id="tft_cs" name="tft_cs" type="number" min="-1" max="48" value="15"></div>
+                <div class="field"><label for="tft_dc">Data/command (DC)</label><input id="tft_dc" name="tft_dc" type="number" min="-1" max="48" value="2">
+                    <span class="hint">Sometimes labelled RS or A0 on the module.</span></div>
+                <div class="field"><label for="tft_rst">Reset (RST)</label><input id="tft_rst" name="tft_rst" type="number" min="-1" max="48" value="4">
+                    <span class="hint">Reset line of the panel; -1 if tied to EN.</span></div>
+            </div>
+        </div>
 
-            <h2 style="margin-top:22px">Display theme</h2>
-            <select name="ui_theme">
-                <option value="0">Voice Assistant</option>
-                <option value="1">Mobile OS</option>
-                <option value="2" selected>Smart Speaker</option>
-            </select>
+        <div class="card">
+            <h2>Touch</h2>
+            <p class="hint" style="margin:0 0 12px">XPT2046 resistive touch controller (shares the display SPI bus).</p>
+            <div class="fields pins">
+                <div class="field"><label for="touch_cs">Touch CS</label><input id="touch_cs" name="touch_cs" type="number" min="-1" max="48" value="14">
+                    <span class="hint">Separate chip select for the touch controller.</span></div>
+                <div class="field"><label for="touch_irq">Touch IRQ</label><input id="touch_irq" name="touch_irq" type="number" min="-1" max="48" value="27">
+                    <span class="hint">Pen-down interrupt; optional (-1 polls instead).</span></div>
+            </div>
+        </div>
 
-            <button class="btn" type="submit">Save &amp; restart</button>
-        </form>
+        <div class="card wide">
+            <h2>Display theme</h2>
+            <p class="hint" style="margin:0 0 12px">Look of the on-device screen. The theme is drawn by LVGL and applied after the restart.</p>
+            <div class="fields">
+                <div class="field">
+                    <label for="ui_theme">Theme</label>
+                    <select id="ui_theme" name="ui_theme">
+                        <option value="0">Voice Assistant</option>
+                        <option value="1">Mobile OS</option>
+                        <option value="2" selected>Smart Speaker</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <div class="wide">
+            <div class="savebar">
+                <button class="btn" type="submit">Save GPIO map &amp; restart</button>
+                <span class="hint">Every value is a GPIO number, -1 means not connected. The device restarts so the drivers re-initialise.</span>
+            </div>
+        </div>
+
     </div>
+    </form>
+
+    <div class="foot">ESP32 SIP Voice v2.4.0 &middot; 192.168.1.42 &middot; Ready</div>
 </div>
 </body>
 </html>
