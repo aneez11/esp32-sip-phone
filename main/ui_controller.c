@@ -1,5 +1,6 @@
 #include "ui_controller.h"
 #include "app_config.h"
+#include "codec_driver.h"
 #include "config_manager.h"
 #include "wifi_manager.h"
 #include "phonebook.h"
@@ -324,85 +325,121 @@ static void pg_escape(page_t *p, const char *s) {
 
 // Single small stylesheet for every page: mobile first, two columns on wider
 // screens, no external fonts or assets (the device serves it for every request).
+// Light dashboard theme, ported from the project's page-design.html reference:
+// same palette (--bg/--panel/--border/--muted/--primary/--success/--danger),
+// header + status badge, 12-column grid, metric boxes with gauges and the
+// button variants. Everything inline, no external assets, no JavaScript.
 static const char PAGE_CSS[] =
-    ":root{color-scheme:dark;}*{box-sizing:border-box;}"
-    "body{margin:0;min-height:100vh;padding:16px;display:flex;justify-content:center;"
-    "font-family:\"Segoe UI\",system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;"
-    "color:#eaf4fb;background:linear-gradient(135deg,#0f2027,#203a43,#2c5364);}"
-    ".wrap{width:100%;max-width:860px;}"
-    ".grid{display:grid;gap:14px;align-items:start;}"
-    ".grid>.wide{grid-column:1/-1;}"
-    "@media(min-width:760px){.grid{grid-template-columns:1fr 1fr;}}"
-    ".card{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.14);"
-    "border-radius:16px;padding:20px;box-shadow:0 8px 32px rgba(0,0,0,.32);margin:0 0 14px;}"
-    ".grid>.card{margin:0;}"
-    "h1{font-size:21px;margin:0 0 4px;letter-spacing:.3px;}"
-    "h2{font-size:12.5px;text-transform:uppercase;letter-spacing:1.1px;color:#8fd6ef;margin:0 0 4px;}"
-    "h3{font-size:14px;margin:0 0 4px;color:#dff0fa;}"
-    ".sub{font-size:12.5px;color:#9fb3c6;margin:0 0 14px;line-height:1.5;}"
-    ".hint{display:block;font-size:11.5px;line-height:1.4;color:#8fa6ba;margin:5px 0 0;}"
-    "label{display:block;font-size:11.5px;letter-spacing:.4px;text-transform:uppercase;color:#a8bccd;margin:0 0 5px;}"
-    "input,select{width:100%;padding:10px 11px;border-radius:9px;font-size:14.5px;color:#fff;"
-    "border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06);}"
-    "input::placeholder{color:#7d90a3;}"
-    "input:focus,select:focus{outline:none;border-color:#00d2ff;box-shadow:0 0 10px rgba(0,210,255,.4);}"
+    ":root{--bg:#f4f6f9;--panel:#fff;--border:#e2e8f0;--text:#1e293b;--muted:#64748b;"
+    "--primary:#2563eb;--primary-hover:#1d4ed8;--success:#10b981;--danger:#ef4444;--warning:#f59e0b;}"
+    "*{box-sizing:border-box;margin:0;padding:0;}"
+    "body{font-family:-apple-system,BlinkMacSystemFont,\"Segoe UI\",Roboto,sans-serif;"
+    "background:var(--bg);color:var(--text);font-size:13px;line-height:1.4;padding:16px;}"
+    ".wrap{max-width:900px;margin:0 auto;}"
+    ".header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;"
+    "background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px 16px;"
+    "margin-bottom:16px;box-shadow:0 1px 2px rgba(0,0,0,.03);}"
+    ".nav{display:flex;flex-wrap:wrap;gap:4px;}"
+    ".nav a{color:var(--muted);text-decoration:none;font-weight:500;padding:5px 12px;border-radius:6px;}"
+    ".nav a:hover{color:var(--text);background:var(--bg);}"
+    ".nav a.on{background:#eff6ff;color:var(--primary);font-weight:600;}"
+    ".status-badge{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;"
+    "padding:3px 8px;border-radius:12px;text-transform:uppercase;}"
+    ".status-badge::before{content:\"\";width:7px;height:7px;border-radius:50%;background:currentColor;}"
+    ".status-badge.ok{background:#d1fae5;color:#047857;}"
+    ".status-badge.offline{background:#fee2e2;color:#b91c1c;}"
+    ".status-badge.ring{background:#e0f2fe;color:#0369a1;animation:pulse 1s infinite;}"
+    ".status-badge.wait{background:#fef3c7;color:#b45309;}"
+    ".status-badge.setup,.status-badge.call{background:#e0f2fe;color:#0369a1;}"
+    "@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}"
+    ".mode-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;"
+    "color:var(--muted);margin:20px 0 8px;}"
+    ".tabs{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px;}"
+    ".tabs a{font-size:12px;font-weight:600;padding:6px 12px;border-radius:6px;text-decoration:none;"
+    "color:var(--muted);background:var(--panel);border:1px solid var(--border);}"
+    ".tabs a:hover{color:var(--text);background:var(--bg);}"
+    ".tabs a.on{background:#eff6ff;color:var(--primary);border-color:#bfdbfe;}"
+    ".grid{display:grid;grid-template-columns:repeat(12,1fr);gap:12px;align-items:start;}"
+    // Safety net: a card dropped straight into .grid without a col-* class still
+    // spans the full row instead of collapsing into one of the 12 columns.
+    ".grid>.card:not(.col-4):not(.col-6):not(.col-8):not(.col-12){grid-column:span 12;}"
+    ".col-12{grid-column:span 12;}.col-8{grid-column:span 8;}"
+    ".col-6{grid-column:span 6;}.col-4{grid-column:span 4;}"
+    "@media(max-width:768px){.col-8,.col-6,.col-4{grid-column:span 12;}}"
+    ".card{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:14px;"
+    "box-shadow:0 1px 2px rgba(0,0,0,.02);min-width:0;}"
+    ".card.narrow{max-width:420px;margin:0 auto;}"
+    ".card-title{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;"
+    "color:var(--muted);margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;}"
+    "h1{font-size:16px;font-weight:700;margin-bottom:10px;}"
+    "h2{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);"
+    "margin-bottom:12px;}"
+    ".banner{border-radius:8px;padding:12px 16px;display:flex;align-items:center;justify-content:space-between;"
+    "gap:12px;flex-wrap:wrap;border-left:4px solid var(--border);background:var(--panel);}"
+    ".banner h1{font-size:14px;font-weight:700;margin-bottom:2px;}"
+    ".banner p{font-size:12px;opacity:.9;}"
+    ".banner .actions{width:auto;}"
+    ".banner .actions form{flex:0 0 auto;}.banner .actions .btn{width:auto;padding:8px 16px;}"
+    ".banner.ok{background:#ecfdf5;border-color:var(--success);color:#065f46;}"
+    ".banner.ring,.banner.call,.banner.setup{background:#f0f9ff;border-color:var(--primary);color:#1e40af;}"
+    ".banner.offline{background:#fef2f2;border-color:var(--danger);color:#991b1b;}"
+    ".banner.wait{background:#fffbeb;border-color:var(--warning);color:#92400e;}"
+    ".metrics{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;}"
+    ".metric-box{background:var(--bg);padding:8px 10px;border-radius:6px;border:1px solid var(--border);"
+    "min-width:0;}"
+    ".metric-label{font-size:10px;color:var(--muted);text-transform:uppercase;font-weight:600;}"
+    ".metric-value{font-size:13px;font-weight:600;margin-top:2px;overflow-wrap:anywhere;}"
+    ".gauge{margin-top:6px;}"
+    ".gauge-track{background:#e2e8f0;height:6px;border-radius:3px;overflow:hidden;}"
+    ".gauge-fill{height:100%;background:var(--primary);border-radius:3px;}"
+    ".actions{display:flex;gap:8px;}.actions form{flex:1;}"
+    ".btn{width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:12px;"
+    "font-weight:600;cursor:pointer;background:#fff;color:var(--text);text-align:center;"
+    "text-decoration:none;display:inline-flex;align-items:center;justify-content:center;gap:6px;}"
+    ".btn:hover:not(:disabled){background:var(--bg);border-color:#cbd5e1;}"
+    ".btn:disabled{opacity:.4;cursor:not-allowed;}"
+    ".btn.primary{background:var(--primary);color:#fff;border-color:transparent;}"
+    ".btn.primary:hover:not(:disabled){background:var(--primary-hover);}"
+    ".btn.success{background:var(--success);color:#fff;border-color:transparent;}"
+    ".btn.danger{background:var(--danger);color:#fff;border-color:transparent;}"
+    ".volume-control{display:flex;align-items:center;gap:8px;}"
+    ".volume-control form{flex:1;}"
     ".fields{display:grid;gap:12px;}"
     ".fields.pins{grid-template-columns:1fr 1fr;}"
     "@media(min-width:540px){.fields{grid-template-columns:repeat(auto-fit,minmax(170px,1fr));}}"
     ".field{min-width:0;}"
-    ".btn{display:block;width:100%;padding:12px;border:0;border-radius:10px;color:#fff;font-size:14.5px;"
-    "font-weight:600;text-align:center;text-decoration:none;cursor:pointer;"
-    "background:linear-gradient(90deg,#00d2ff,#3a7bd5);}"
-    ".btn:hover{filter:brightness(1.08);}"
-    ".btn:disabled{opacity:.38;cursor:not-allowed;filter:none;}"
-    ".btn.call{background:linear-gradient(90deg,#11998e,#38ef7d);}"
-    ".btn.answer{background:linear-gradient(90deg,#2193b0,#6dd5ed);}"
-    ".btn.hangup{background:linear-gradient(90deg,#cb2d3e,#ef473a);}"
-    ".actions{display:flex;gap:10px;}.actions form{flex:1;}"
+    "label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.4px;"
+    "color:var(--muted);margin-bottom:5px;}"
+    "input,select{width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;"
+    "font-size:13px;color:var(--text);background:#fff;font-family:inherit;}"
+    "input:focus,select:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 2px #dbeafe;}"
+    "input[type=range]{padding:0;border:0;background:none;accent-color:var(--primary);}"
+    ".hint{display:block;font-size:11px;color:var(--muted);margin-top:5px;line-height:1.4;}"
+    ".sub{font-size:12px;color:var(--muted);margin-bottom:12px;}"
+    ".pill{display:inline-block;font-size:11px;font-weight:600;padding:3px 8px;border-radius:12px;"
+    "background:var(--bg);border:1px solid var(--border);color:var(--muted);margin:0 4px 6px 0;}"
+    ".pill.good{background:#d1fae5;border-color:transparent;color:#047857;}"
+    ".pill.bad{background:#fee2e2;border-color:transparent;color:#b91c1c;}"
+    ".info{background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:10px 12px;"
+    "font-size:12px;line-height:1.5;margin-bottom:12px;color:#1e40af;}"
+    ".warn{background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:10px 12px;"
+    "font-size:12px;line-height:1.5;margin-bottom:12px;color:#92400e;}"
+    ".err{background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:10px 12px;"
+    "font-size:12px;margin-bottom:12px;color:#991b1b;}"
+    ".ok{background:#ecfdf5;border:1px solid #a7f3d0;border-radius:6px;padding:10px 12px;"
+    "font-size:12px;color:#065f46;}"
+    "table{width:100%;border-collapse:collapse;font-size:13px;}"
+    "td{padding:8px 4px;border-bottom:1px solid var(--border);vertical-align:middle;}"
+    ".del{background:none;border:1px solid var(--border);color:var(--danger);border-radius:6px;"
+    "padding:5px 10px;cursor:pointer;font-size:11px;font-weight:600;}"
     ".savebar{position:sticky;bottom:0;z-index:5;display:flex;flex-wrap:wrap;gap:12px;align-items:center;"
-    "background:rgba(11,26,33,.94);border:1px solid rgba(255,255,255,.16);border-radius:14px;"
-    "padding:12px 14px;margin-top:2px;box-shadow:0 -6px 24px rgba(0,0,0,.35);}"
-    ".savebar .btn{margin:0;flex:1;min-width:150px;}"
-    ".savebar .hint{margin:0;flex:1.5;min-width:170px;}"
-    ".nav{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center;margin-bottom:14px;}"
-    ".nav a{color:#cfe9f5;text-decoration:none;font-size:12.5px;padding:7px 12px;border-radius:999px;"
-    "background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);}"
-    ".nav a.on{background:linear-gradient(90deg,#00d2ff,#3a7bd5);border-color:transparent;color:#04121c;font-weight:700;}"
-    ".navmode{font-size:10.5px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;padding:7px 11px;"
-    "border-radius:999px;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.07);color:#cfe9f5;}"
-    ".navmode.ok{color:#8bf3b6;}.navmode.offline{color:#ffb3b8;}.navmode.wait{color:#ffd28a;}"
-    ".navmode.ring,.navmode.call,.navmode.setup{color:#9fe8ff;}"
-    ".banner{border-radius:16px;padding:18px;border:1px solid rgba(255,255,255,.16);"
-    "box-shadow:0 8px 32px rgba(0,0,0,.3);}"
-    ".banner h1{margin:0 0 6px;}"
-    ".banner p{margin:0;font-size:13px;line-height:1.5;color:#e6f0f8;opacity:.93;}"
-    ".banner.setup{background:linear-gradient(120deg,rgba(0,210,255,.22),rgba(58,123,213,.18));}"
-    ".banner.offline{background:linear-gradient(120deg,rgba(203,45,62,.3),rgba(239,71,58,.16));}"
-    ".banner.wait{background:linear-gradient(120deg,rgba(255,184,0,.24),rgba(255,140,0,.14));}"
-    ".banner.ok{background:linear-gradient(120deg,rgba(17,153,142,.3),rgba(56,239,125,.18));}"
-    ".banner.call{background:linear-gradient(120deg,rgba(0,210,255,.24),rgba(58,123,213,.2));}"
-    ".banner.ring{background:linear-gradient(120deg,rgba(33,147,176,.36),rgba(109,213,237,.22));"
-    "animation:pulse 1.5s ease-in-out infinite;}"
-    "@keyframes pulse{0%,100%{box-shadow:0 8px 32px rgba(0,0,0,.3);}"
-    "50%{box-shadow:0 0 24px rgba(0,210,255,.55);}}"
-    ".pill{display:inline-block;font-size:11.5px;padding:4px 10px;border-radius:999px;"
-    "background:rgba(255,255,255,.1);margin:0 4px 6px 0;color:#cfe9f5;}"
-    ".pill.good{background:rgba(56,239,125,.18);color:#8bf3b6;}"
-    ".pill.bad{background:rgba(203,45,62,.22);color:#ffb3b8;}"
-    ".err{background:rgba(203,45,62,.2);border:1px solid #cb2d3e;border-radius:9px;"
-    "padding:10px 12px;font-size:12.5px;margin:0 0 12px;}"
-    ".ok{background:rgba(56,239,125,.14);border:1px solid #38ef7d;border-radius:9px;"
-    "padding:10px 12px;font-size:12.5px;}"
-    ".info{background:rgba(0,210,255,.1);border:1px solid rgba(0,210,255,.45);border-radius:9px;"
-    "padding:10px 12px;font-size:12.5px;line-height:1.5;margin-bottom:12px;}"
-    ".warn{background:rgba(255,184,0,.12);border:1px solid rgba(255,184,0,.45);border-radius:9px;"
-    "padding:10px 12px;font-size:12.5px;line-height:1.5;margin-bottom:12px;}"
-    "table{width:100%;border-collapse:collapse;font-size:13.5px;}"
-    "td{padding:9px 4px;border-bottom:1px solid rgba(255,255,255,.09);vertical-align:middle;}"
-    ".del{background:none;border:1px solid rgba(255,255,255,.2);color:#ff9aa2;border-radius:8px;"
-    "padding:5px 10px;cursor:pointer;font-size:12px;}"
-    ".foot{text-align:center;font-size:11.5px;color:#8ea4b8;padding:12px 0 2px;}"
-    "a.link{color:#7fe3ff;font-size:12.5px;text-decoration:none;}";
+    "background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 12px;"
+    "box-shadow:0 -4px 16px rgba(0,0,0,.06);}"
+    ".savebar .btn{width:auto;flex:0 0 auto;min-width:150px;padding:8px 18px;}"
+    ".savebar .hint{margin:0;flex:1;min-width:170px;}"
+    ".foot{text-align:center;font-size:11px;color:var(--muted);margin-top:24px;padding-top:12px;"
+    "border-top:1px solid var(--border);}"
+    "a.link{color:var(--primary);font-size:12px;font-weight:600;text-decoration:none;}";
 
 static void pg_head(page_t *p, const char *title, int refresh_s) {
     pg_puts(p, "<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'>"
@@ -474,6 +511,16 @@ static void field_select(page_t *p, const char *name, const char *label, const c
     field_end(p, hint);
 }
 
+// Slider (no JavaScript: the value is submitted with the form and shown in the
+// label, so the current setting is always visible).
+static void field_range(page_t *p, const char *name, const char *label, int value,
+                        int min, int max, int step, const char *hint) {
+    field_label(p, name, label);
+    pg_printf(p, "<input id='%s' name='%s' type='range' min='%d' max='%d' step='%d' value='%d'>",
+              name, name, min, max, step, value);
+    field_end(p, hint);
+}
+
 static void field_num(page_t *p, const char *name, const char *label, int value,
                       int min, int max, const char *hint) {
     field_label(p, name, label);
@@ -501,10 +548,41 @@ static void nav_link(page_t *p, const char *href, const char *label, bool active
     pg_printf(p, "<a href='%s'%s>%s</a>", href, active ? " class='on'" : "", label);
 }
 
+// Read "?tab=xxx" from the request URI ("" when absent). The HTTP server
+// matches on the path only, so extra query parameters are free.
+static void tab_value(httpd_req_t *req, char *out, size_t out_len) {
+    if (!out || out_len == 0) return;
+    out[0] = '\0';
+    const char *q = req ? strchr(req->uri, '?') : NULL;
+    if (!q) return;
+    const char *t = strstr(q, "tab=");
+    if (!t) return;
+    t += 4;
+    size_t n = 0;
+    while (t[n] && t[n] != '&' && n + 1 < out_len) {
+        out[n] = t[n];
+        n++;
+    }
+    out[n] = '\0';
+}
+
+// Server-rendered tab bar: one URL per tab, no JavaScript needed.
+static void render_tabs(page_t *p, const char *base, const char *const *ids,
+                        const char *const *labels, int count, const char *active) {
+    pg_puts(p, "<nav class='tabs'>");
+    for (int i = 0; i < count; i++) {
+        pg_printf(p, "<a href='%s?tab=%s'%s>%s</a>", base, ids[i],
+                  (strcmp(ids[i], active) == 0) ? " class='on'" : "", labels[i]);
+    }
+    pg_puts(p, "</nav>");
+}
+
+// Header bar: navigation pills on the left, current device mode badge on the
+// right (as in page-design.html).
 static void pg_nav(page_t *p, const char *active) {
     bool ap = wifi_is_ap_mode();
     device_mode_t m = device_mode();
-    pg_puts(p, "<nav class='nav'>");
+    pg_puts(p, "<header class='header'><nav class='nav'>");
     if (!ap) {
         nav_link(p, "/", "Call", strcmp(active, "call") == 0);
         nav_link(p, "/phonebook", "Phonebook", strcmp(active, "phonebook") == 0);
@@ -512,9 +590,8 @@ static void pg_nav(page_t *p, const char *active) {
     nav_link(p, "/setup", "Settings", strcmp(active, "setup") == 0);
     if (!ap) nav_link(p, "/hardware", "Hardware", strcmp(active, "hardware") == 0);
     nav_link(p, "/logout", "Logout", false);
-    // Current device mode, visible on every page.
-    pg_printf(p, "<span class='navmode %s'>%s</span>", mode_class(m), mode_name(m));
-    pg_puts(p, "</nav>");
+    pg_printf(p, "</nav><span class='status-badge %s'>%s</span></header>",
+              mode_class(m), mode_name(m));
 }
 
 static void pg_foot(page_t *p) { pg_puts(p, "</div></body></html>"); }
@@ -672,7 +749,7 @@ static void render_login(httpd_req_t *req, const char *error) {
     page_t p;
     pg_init(&p, PAGE_MIN_CAP);
     pg_head(&p, "Sign in - ESP32 SIP", 0);
-    pg_puts(&p, "<div class='card'><h1>ESP32 SIP Voice</h1>"
+    pg_puts(&p, "<div class='card narrow'><h1>ESP32 SIP Voice</h1>"
                 "<p class='sub'>Sign in to check the phone status or change its settings.</p>");
     if (error) {
         pg_puts(&p, "<div class='err'>");
@@ -691,7 +768,7 @@ static void render_login(httpd_req_t *req, const char *error) {
                 "<div class='field'><label for='pass'>Password</label>"
                 "<input id='pass' name='pass' type='password' maxlength='63' "
                 "autocomplete='current-password'></div>"
-                "</div><button class='btn' type='submit' style='margin-top:14px'>Sign in"
+                "</div><button class='btn primary' type='submit' style='margin-top:14px'>Sign in"
                 "</button></form></div>");
     pg_device_footer(&p);
     pg_foot(&p);
@@ -778,9 +855,24 @@ static void action_button(page_t *p, const char *action, const char *label,
               action, cls, enabled ? "" : " disabled", label);
 }
 
+// "sip:1001@host" -> "1001", for the Call button label in the dashboard.
+static void call_target_short(char *buf, size_t buf_len) {
+    const char *t = call_target();
+    if (!buf || buf_len == 0) return;
+    const char *sip = strstr(t, "sip:");
+    if (sip) t = sip + 4;
+    const char *at = strchr(t, '@');
+    size_t n = at ? (size_t)(at - t) : strlen(t);
+    if (n >= buf_len) n = buf_len - 1;
+    memcpy(buf, t, n);
+    buf[n] = '\0';
+}
+
 // The mode card: what the device is doing and what can be done about it.
+// Follows page-design.html: banner with the reason on the left and the
+// contextual answer/decline/cancel actions on the right.
 static void render_mode_card(page_t *p, device_mode_t mode, const char *remote_uri) {
-    pg_printf(p, "<div class='banner %s'><h1>%s</h1><p>", mode_class(mode), mode_name(mode));
+    pg_printf(p, "<div class='banner %s'><div><h1>%s</h1><p>", mode_class(mode), mode_name(mode));
     switch (mode) {
         case MODE_SETUP:
             pg_puts(p, "No Wi-Fi link yet - this device is broadcasting its own open setup access "
@@ -838,6 +930,21 @@ static void render_mode_card(page_t *p, device_mode_t mode, const char *remote_u
             break;
     }
     pg_puts(p, "</p></div>");
+
+    // Contextual actions inside the banner (as in the design reference).
+    if (mode == MODE_INCOMING) {
+        pg_puts(p, "<div class='actions'>");
+        action_button(p, "/answer", "Answer", "success", true);
+        action_button(p, "/hangup", "Decline", "danger", true);
+        pg_puts(p, "</div>");
+    } else if (mode == MODE_OUTGOING || mode == MODE_ACTIVE) {
+        pg_puts(p, "<div class='actions'>");
+        action_button(p, "/hangup", (mode == MODE_OUTGOING) ? "Cancel" : "Hang up", "danger", true);
+        pg_puts(p, "</div>");
+    } else if (mode != MODE_IDLE) {
+        pg_puts(p, "<div class='actions'><a class='btn' href='/setup'>Open Settings</a></div>");
+    }
+    pg_puts(p, "</div>");
 }
 
 // Main page: shows the current device mode, the connection/account state and
@@ -858,11 +965,6 @@ static esp_err_t index_get_handler(httpd_req_t *req) {
     pg_head(&p, "ESP32 SIP Phone", (mode == MODE_INCOMING) ? 3 : 5);
     pg_nav(&p, "call");
 
-    pg_puts(&p, "<div class='grid'>");
-    pg_puts(&p, "<div class='wide'>");
-    render_mode_card(&p, mode, remote);
-    pg_puts(&p, "</div>");
-
     EventBits_t bits = app_event_group ? xEventGroupGetBits(app_event_group) : 0;
     bool wifi_up = (bits & WIFI_CONNECTED_BIT) != 0;
     bool registered = (bits & SIP_REGISTERED_BIT) != 0;
@@ -873,51 +975,97 @@ static esp_err_t index_get_handler(httpd_req_t *req) {
     snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ip));
 
     int64_t up_s = esp_timer_get_time() / 1000000;
+    int up_days = (int)(up_s / 86400);
+    char call_label[64];
+    call_target_short(call_label, sizeof(call_label));
 
-    pg_puts(&p, "<div class='card'><h2>Connection</h2>");
-    pg_printf(&p, "<span class='pill %s'>Wi-Fi %s</span>", wifi_up ? "good" : "bad",
-              wifi_up ? "connected" : "disconnected");
-    pg_printf(&p, "<span class='pill %s'>SIP %s</span>", registered ? "good" : "bad",
-              registered ? "registered" : "not registered");
-    pg_printf(&p, "<span class='pill'>IP %s</span>", ip_str);
-    pg_printf(&p, "<span class='pill'>Up %d:%02d:%02d</span>",
-              (int)(up_s / 3600), (int)((up_s / 60) % 60), (int)(up_s % 60));
-    if (g_settings) {
-        pg_puts(&p, "<span class='pill'>Account ");
-        pg_escape(&p, g_settings->sip_user);
-        pg_puts(&p, "</span><span class='pill'>Server ");
-        pg_escape(&p, g_settings->sip_server);
-        pg_printf(&p, ":%u</span>",
-                  (unsigned)(g_settings->sip_port ? g_settings->sip_port : SIP_SERVER_PORT));
-    }
-    if (calling) {
-        pg_puts(&p, "<p class='sub' style='margin:12px 0 0'>Call target: ");
-        pg_escape(&p, call_target());
-        pg_puts(&p, "</p>");
-    }
-
-    if (calling) {
-        pg_puts(&p, "<h2 style='margin-top:18px'>Call control</h2><div class='actions'>");
-        action_button(&p, "/call", "Call", "call", mode == MODE_IDLE);
-        action_button(&p, "/answer", "Answer", "answer", mode == MODE_INCOMING);
-        action_button(&p, "/hangup", (mode == MODE_OUTGOING) ? "Cancel" : "Hang up", "hangup",
-                      mode == MODE_INCOMING || mode == MODE_OUTGOING || mode == MODE_ACTIVE);
-        pg_puts(&p, "</div>");
-    } else {
-        pg_puts(&p, "<h2 style='margin-top:18px'>Call control</h2>"
-                    "<p class='sub'>Call buttons unlock once the phone is registered.</p>"
-                    "<div class='actions'>");
-        action_button(&p, "/call", "Call", "call", false);
-        action_button(&p, "/answer", "Answer", "answer", false);
-        action_button(&p, "/hangup", "Hang up", "hangup", false);
-        pg_puts(&p, "</div><a class='btn' href='/setup'>Open settings</a>");
-    }
-
+    pg_printf(&p, "<p class='mode-label'>Mode: %s</p>", mode_name(mode));
+    pg_puts(&p, "<div class='grid'>");
+    pg_puts(&p, "<div class='col-12'>");
+    render_mode_card(&p, mode, remote);
     pg_puts(&p, "</div>");
 
-    pg_puts(&p, "<div class='card'><h2>Device</h2>"
-                "<p class='hint' style='margin:0 0 10px'>Capabilities compiled into this firmware."
-                "</p>");
+    // --- System status dashboard ---
+    pg_puts(&p, "<div class='col-8'><div class='card'>"
+                "<div class='card-title'>System Status</div><div class='metrics'>");
+
+    pg_puts(&p, "<div class='metric-box'><div class='metric-label'>Network &amp; IP</div>"
+                "<div class='metric-value'>");
+    pg_puts(&p, ip_str);
+    pg_printf(&p, "</div><div class='gauge'><div class='gauge-track'><div class='gauge-fill' "
+                  "style='width:%d%%;background:%s'></div></div></div></div>",
+              wifi_up ? 100 : 0, wifi_up ? "#10b981" : "#ef4444");
+
+    pg_puts(&p, "<div class='metric-box'><div class='metric-label'>SIP Registration</div>"
+                "<div class='metric-value'>");
+    if (g_settings) pg_escape(&p, g_settings->sip_user);
+    pg_puts(&p, registered ? " @ Active" : " @ Down");
+    pg_printf(&p, "</div><div class='gauge'><div class='gauge-track'><div class='gauge-fill' "
+                  "style='width:%d%%;background:%s'></div></div></div></div>",
+              registered ? 100 : 0, registered ? "#10b981" : "#ef4444");
+
+    pg_puts(&p, "<div class='metric-box'><div class='metric-label'>SIP Server</div>"
+                "<div class='metric-value'>");
+    if (g_settings) {
+        pg_escape(&p, g_settings->sip_server);
+        pg_printf(&p, ":%u", (unsigned)(g_settings->sip_port ? g_settings->sip_port : SIP_SERVER_PORT));
+    }
+    pg_puts(&p, "</div></div>");
+
+    pg_printf(&p, "<div class='metric-box'><div class='metric-label'>Uptime</div>"
+                  "<div class='metric-value'>%dd %02d:%02d:%02d</div></div>",
+              up_days, (int)((up_s / 3600) % 24), (int)((up_s / 60) % 60), (int)(up_s % 60));
+
+    pg_puts(&p, "</div></div></div>"); // .metrics, .card, .col-8
+
+    // --- Controls column ---
+    pg_puts(&p, "<div class='col-4'><div class='card'>"
+                "<div class='card-title'>Call Control</div>");
+    pg_puts(&p, "<div class='actions' style='flex-direction:column'>");
+    pg_puts(&p, "<form method='POST' action='/call'>"
+                "<button class='btn success' type='submit'");
+    if (mode != MODE_IDLE) pg_puts(&p, " disabled");
+    pg_puts(&p, ">Call");
+    if (call_label[0]) {
+        pg_puts(&p, " ");
+        pg_escape(&p, call_label);
+    }
+    pg_puts(&p, "</button></form>");
+    pg_puts(&p, "<div class='actions'>");
+    action_button(&p, "/answer", "Answer", "", mode == MODE_INCOMING);
+    action_button(&p, "/hangup", (mode == MODE_OUTGOING) ? "Cancel" : "Hang up", "danger",
+                  mode == MODE_INCOMING || mode == MODE_OUTGOING || mode == MODE_ACTIVE);
+    pg_puts(&p, "</div></div>");
+
+    // --- Speaker level (applies immediately, no restart) ---
+    pg_printf(&p, "<div class='card-title' style='margin-top:16px'>Speaker Level (%u%%)</div>",
+              (unsigned)g_settings->volume);
+    pg_puts(&p, "<div class='volume-control'>"
+                "<form method='POST' action='/volume'>"
+                "<input type='hidden' name='step' value='-5'>"
+                "<button class='btn' type='submit'>&minus;</button></form>");
+    pg_printf(&p, "<form method='POST' action='/volume'>"
+                  "<input type='hidden' name='mute' value='%d'>"
+                  "<button class='btn' type='submit'>%s</button></form>",
+              g_settings->volume == 0 ? 0 : 1, g_settings->volume == 0 ? "Unmute" : "Mute");
+    pg_puts(&p, "<form method='POST' action='/volume'>"
+                "<input type='hidden' name='step' value='5'>"
+                "<button class='btn' type='submit'>+</button></form>"
+                "</div>");
+    pg_printf(&p, "<div class='gauge'><div class='gauge-track'>"
+                  "<div class='gauge-fill' style='width:%u%%'></div></div></div>",
+              (unsigned)g_settings->volume);
+    pg_puts(&p, "<a class='link' href='/setup' style='display:inline-block;margin-top:12px'>"
+                "Set an exact level in Settings &raquo;</a></div></div>"); // .card, .col-4
+
+    // --- Device / target info ---
+    pg_puts(&p, "<div class='col-12'><div class='card'>"
+                "<div class='card-title'>Device</div>");
+    if (calling) {
+        pg_puts(&p, "<span class='pill'>Target: ");
+        pg_escape(&p, call_target());
+        pg_puts(&p, "</span>");
+    }
     pg_printf(&p, "<span class='pill'>Mode: %s</span>", role_name());
     if (speaker_mode() && g_settings && g_settings->auto_answer_delay_s > 0) {
         pg_printf(&p, "<span class='pill'>Auto-answer +%u s</span>",
@@ -931,8 +1079,7 @@ static esp_err_t index_get_handler(httpd_req_t *req) {
 #else
     pg_puts(&p, "<span class='pill'>Wake word off</span>");
 #endif
-    pg_puts(&p, "</div>");
-    pg_puts(&p, "</div>"); // .grid
+    pg_puts(&p, "</div></div></div>"); // .card, .col-12, .grid
 
     pg_device_footer(&p);
     pg_foot(&p);
@@ -960,6 +1107,25 @@ static esp_err_t setup_get_handler(httpd_req_t *req) {
                     "</div>");
     }
 
+    // Tab bar: one section per tab so nothing is crammed onto one page.
+    const char *tab_ids[5], *tab_labels[5];
+    int tab_count = 0;
+    tab_ids[tab_count] = "mode"; tab_labels[tab_count++] = "Mode &amp; Audio";
+    tab_ids[tab_count] = "wifi"; tab_labels[tab_count++] = "Wi-Fi";
+    tab_ids[tab_count] = "sip";  tab_labels[tab_count++] = "SIP Server";
+    tab_ids[tab_count] = "call"; tab_labels[tab_count++] = "Calling";
+    if (!wifi_is_ap_mode()) {
+        tab_ids[tab_count] = "web"; tab_labels[tab_count++] = "Web Login";
+    }
+    char tab[16];
+    tab_value(req, tab, sizeof(tab));
+    bool valid = false;
+    for (int i = 0; i < tab_count; i++) {
+        if (tab[0] && strcmp(tab, tab_ids[i]) == 0) valid = true;
+    }
+    if (!valid) snprintf(tab, sizeof(tab), "%s", tab_ids[0]);
+
+    render_tabs(&p, "/setup", tab_ids, tab_labels, tab_count, tab);
     pg_puts(&p, "<form method='POST' action='/setup'><div class='grid'>");
 
     // --- Mode (device role) + audio hardware ---
@@ -972,7 +1138,8 @@ static esp_err_t setup_get_handler(httpd_req_t *req) {
         "Plain I2S amp - MAX98357A / PCM5102 (no control bus)",
         "I2C codec - ES8388 / ES8311",
     };
-    pg_puts(&p, "<div class='card'><h2>Mode &amp; audio</h2>"
+    if (strcmp(tab, "mode") == 0) {
+    pg_puts(&p, "<div class='card col-12'><div class='card-title'>Mode &amp; audio</div>"
                 "<p class='hint' style='margin:0 0 12px'>How this device behaves when somebody "
                 "calls it, and which audio hardware it drives.</p>"
                 "<div class='fields'>");
@@ -988,10 +1155,18 @@ static esp_err_t setup_get_handler(httpd_req_t *req) {
                  "no control bus (volume is then scaled in software). <b>I2C codec</b> for ES8388/"
                  "ES8311 modules. <b>Auto</b> picks the codec when I2C pins are wired and it "
                  "answers, otherwise a plain amp. Changing this restarts the device.");
+    char vol_hint[96];
+    snprintf(vol_hint, sizeof(vol_hint),
+             "Playback level, currently %u%%. 0 mutes the speaker. Applies immediately, no restart.",
+             (unsigned)g_settings->volume);
+    field_range(&p, "volume", "Volume", g_settings->volume, 0, AUDIO_VOLUME_MAX,
+                AUDIO_VOLUME_STEP, vol_hint);
     pg_puts(&p, "</div></div>");
+    } // tab: mode
 
     // --- Wi-Fi ---
-    pg_puts(&p, "<div class='card'><h2>Wi-Fi</h2>"
+    if (strcmp(tab, "wifi") == 0) {
+    pg_puts(&p, "<div class='card col-12'><div class='card-title'>Wi-Fi</div>"
                 "<p class='hint' style='margin:0 0 12px'>The network this phone joins. "
                 "Changing it restarts the device.</p>"
                 "<div class='fields'>");
@@ -1001,9 +1176,11 @@ static esp_err_t setup_get_handler(httpd_req_t *req) {
     field_password(&p, "wifi_pass", "Wi-Fi password",
                    "Stored in NVS on the device. Empty keeps the current one.");
     pg_puts(&p, "</div></div>");
+    } // tab: wifi
 
     // --- SIP server ---
-    pg_puts(&p, "<div class='card'><h2>SIP server</h2>"
+    if (strcmp(tab, "sip") == 0) {
+    pg_puts(&p, "<div class='card col-12'><div class='card-title'>SIP server</div>"
                 "<p class='hint' style='margin:0 0 12px'>The PBX or provider this phone registers "
                 "with (Asterisk, FreePBX, antisip, ...).</p>"
                 "<div class='fields'>");
@@ -1019,7 +1196,7 @@ static esp_err_t setup_get_handler(httpd_req_t *req) {
     pg_puts(&p, "</div></div>");
 
     // --- SIP account ---
-    pg_puts(&p, "<div class='card'><h2>SIP account</h2>"
+    pg_puts(&p, "<div class='card col-12'><div class='card-title'>SIP account</div>"
                 "<p class='hint' style='margin:0 0 12px'>The credentials this phone authenticates "
                 "with. Saving re-registers immediately, no restart.</p>"
                 "<div class='fields'>");
@@ -1031,9 +1208,11 @@ static esp_err_t setup_get_handler(httpd_req_t *req) {
                "ESP32 Phone", "text", 31,
                "Name shown to the other party as the caller.");
     pg_puts(&p, "</div></div>");
+    } // tab: sip
 
     // --- Calling ---
-    pg_puts(&p, "<div class='card'><h2>Calling</h2>"
+    if (strcmp(tab, "call") == 0) {
+    pg_puts(&p, "<div class='card col-12'><div class='card-title'>Calling</div>"
                 "<p class='hint' style='margin:0 0 12px'>What the physical button, the wake word "
                 "and the web <b>Call</b> button dial.</p>"
                 "<div class='fields'>");
@@ -1041,23 +1220,24 @@ static esp_err_t setup_get_handler(httpd_req_t *req) {
                "sip:1001@192.168.1.100", "text", 63,
                "Full SIP URI, e.g. sip:1001@192.168.1.100 or sip:reception@provider.com.");
     pg_puts(&p, "</div></div>");
+    } // tab: call
 
     // --- Web access ---
-    if (!wifi_is_ap_mode()) {
-        pg_puts(&p, "<div class='card'><h2>Web access</h2>"
+    if (strcmp(tab, "web") == 0) {
+        pg_puts(&p, "<div class='card col-12'><div class='card-title'>Web access</div>"
                     "<p class='hint' style='margin:0 0 12px'>Credentials for this web interface. "
                     "Changing them does not sign you out here.</p>"
                     "<div class='fields'>");
         field_text(&p, "web_user", "Login username", g_settings->web_user, "admin", "text", 31,
                    "Used together with the login password on the sign-in page.");
         field_password(&p, "web_pass", "Login password",
-                       "Change the factory default as soon as the device is on your network.");
+                       "Change the factory default as soon as the device is on your own network.");
         pg_puts(&p, "</div></div>");
-    }
+    } // tab: web
 
     // --- Save ---
-    pg_puts(&p, "<div class='wide'><div class='savebar'>"
-                "<button class='btn' type='submit'>Save settings</button>"
+    pg_puts(&p, "<div class='col-12'><div class='savebar'>"
+                "<button class='btn primary' type='submit'>Save settings</button>"
                 "<span class='hint'>SIP account and login changes apply immediately. Wi-Fi changes "
                 "restart the device.</span></div></div>");
     pg_puts(&p, "</div></form>"); // .grid
@@ -1131,6 +1311,16 @@ static esp_err_t setup_post_handler(httpd_req_t *req) {
         }
     }
 
+    // Playback volume: applied live, no restart.
+    bool volume_changed = false;
+    if (form_get(buf, "volume", v, sizeof(v)) && v[0]) {
+        int vol = atoi(v);
+        if (vol >= 0 && vol <= AUDIO_VOLUME_MAX && (uint8_t)vol != updated.volume) {
+            updated.volume = (uint8_t)vol;
+            volume_changed = true;
+        }
+    }
+
     // Audio backend: needs a fresh codec/I2S init, so this one restarts too.
     if (form_get(buf, "audio_out", v, sizeof(v)) && v[0]) {
         int ao = atoi(v);
@@ -1140,7 +1330,8 @@ static esp_err_t setup_post_handler(httpd_req_t *req) {
         }
     }
 
-    bool changed = wifi_changed || sip_changed || web_changed || mode_changed || audio_changed;
+    bool changed = wifi_changed || sip_changed || web_changed || mode_changed ||
+                   audio_changed || volume_changed;
 
     if (too_long) {
         page_t p;
@@ -1176,6 +1367,10 @@ static esp_err_t setup_post_handler(httpd_req_t *req) {
 
     *g_settings = updated;
     config_manager_save(g_settings);
+    if (volume_changed) {
+        codec_set_volume(g_settings->volume);
+        ESP_LOGI(TAG, "Volume set to %u%%", (unsigned)g_settings->volume);
+    }
     ESP_LOGI(TAG, "Settings updated from web UI (sip_server='%s', sip_user='%s')",
              g_settings->sip_server, g_settings->sip_user);
 
@@ -1215,6 +1410,10 @@ static esp_err_t setup_post_handler(httpd_req_t *req) {
         pg_escape(&p, role_name());
         pg_puts(&p, ". It applies to the next incoming call.</p>");
     }
+    if (volume_changed) {
+        pg_printf(&p, "<p class='sub'>Volume set to %u%% of full scale.</p>",
+                  (unsigned)g_settings->volume);
+    }
     if (sip_applied) {
         pg_puts(&p, "<p class='sub'>The SIP account was updated and the device is "
                     "re-registering now. If a call was in progress, the new account is "
@@ -1252,6 +1451,39 @@ static esp_err_t action_post_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+// Quick volume control: absolute (vol), relative (step) or mute toggle (mute).
+// Applied live to the codec/software gain and persisted, no restart.
+static esp_err_t volume_post_handler(httpd_req_t *req) {
+    if (!require_login(req)) return ESP_OK;
+
+    int vol = g_settings->volume;
+    char buf[160];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret > 0) {
+        buf[ret] = '\0';
+        char v[16];
+        if (form_get(buf, "vol", v, sizeof(v)) && v[0]) {
+            vol = atoi(v);
+        } else if (form_get(buf, "step", v, sizeof(v)) && v[0]) {
+            vol += atoi(v);
+        } else if (form_get(buf, "mute", v, sizeof(v)) && v[0]) {
+            vol = atoi(v) ? 0 : AUDIO_VOLUME_DEFAULT;
+        }
+    }
+
+    if (vol < 0) vol = 0;
+    if (vol > AUDIO_VOLUME_MAX) vol = AUDIO_VOLUME_MAX;
+
+    if ((uint8_t)vol != g_settings->volume) {
+        g_settings->volume = (uint8_t)vol;
+        codec_set_volume(g_settings->volume);
+        config_manager_save(g_settings);
+        ESP_LOGI(TAG, "Volume -> %u%%", (unsigned)g_settings->volume);
+    }
+    redirect_to(req, "/");
+    return ESP_OK;
+}
+
 static esp_err_t phonebook_get_handler(httpd_req_t *req) {
     if (!require_login(req)) return ESP_OK;
 
@@ -1264,7 +1496,7 @@ static esp_err_t phonebook_get_handler(httpd_req_t *req) {
                 "button and the keypad dial the entry matching the slot number.</p>"
                 "<div class='grid'>");
 
-    pg_puts(&p, "<div class='card'><h2>Saved entries</h2>");
+    pg_puts(&p, "<div class='card col-12'><div class='card-title'>Saved entries</div>");
     phonebook_entry_t entry;
     bool any = false;
     pg_puts(&p, "<table>");
@@ -1284,7 +1516,7 @@ static esp_err_t phonebook_get_handler(httpd_req_t *req) {
     if (!any) pg_puts(&p, "<p class='sub' style='margin:0'>No entries saved yet.</p>");
     pg_puts(&p, "</div>");
 
-    pg_puts(&p, "<div class='card'><h2>Add or replace</h2>"
+    pg_puts(&p, "<div class='card col-12'><div class='card-title'>Add or replace</div>"
                 "<p class='hint' style='margin:0 0 12px'>Saving into an occupied slot overwrites "
                 "that entry.</p>"
                 "<form method='POST' action='/pb_add'><div class='fields'>");
@@ -1294,7 +1526,7 @@ static esp_err_t phonebook_get_handler(httpd_req_t *req) {
                "Full SIP URI to dial for this contact.");
     field_num(&p, "id", "Speed dial slot", 0, 0, MAX_PHONEBOOK_ENTRIES - 1,
               "Slot number 0-9.");
-    pg_puts(&p, "</div><button class='btn' type='submit' style='margin-top:14px'>Save entry"
+    pg_puts(&p, "</div><button class='btn primary' type='submit' style='margin-top:14px'>Save entry"
                 "</button></form></div>");
     pg_puts(&p, "</div>"); // .grid
 
@@ -1357,13 +1589,32 @@ static esp_err_t hardware_get_handler(httpd_req_t *req) {
     pg_nav(&p, "hardware");
     pg_puts(&p, "<h1>Hardware</h1>"
                 "<p class='sub'>GPIO wiring for this board. Every value is a GPIO number; use "
-                "<b>-1</b> for anything that is not wired. Saving restarts the device.</p>"
-                "<div class='warn'>Wrong pins leave the display or the audio silent. Change one "
-                "group at a time and check the serial log if a peripheral stops working. Blank "
-                "fields keep the stored value.</div>"
-                "<form method='POST' action='/hardware'><div class='grid'>");
+                "<b>-1</b> for anything that is not wired. Saving restarts the device.</p>");
 
-    pg_puts(&p, "<div class='card'><h2>I2S audio</h2>"
+    // One peripheral group per tab.
+    static const char *hw_ids[] = { "audio", "i2c", "display", "touch", "theme" };
+    static const char *hw_labels[] = { "I2S Audio", "I2C Control", "Display (SPI)", "Touch", "Theme" };
+    char tab[16];
+    tab_value(req, tab, sizeof(tab));
+    bool valid = false;
+    for (size_t i = 0; i < sizeof(hw_ids) / sizeof(hw_ids[0]); i++) {
+        if (tab[0] && strcmp(tab, hw_ids[i]) == 0) valid = true;
+    }
+    if (!valid) snprintf(tab, sizeof(tab), "%s", hw_ids[0]);
+
+    render_tabs(&p, "/hardware", hw_ids, hw_labels,
+                (int)(sizeof(hw_ids) / sizeof(hw_ids[0])), tab);
+
+    pg_puts(&p, "<form method='POST' action='/hardware'><div class='grid'>");
+
+    if (strcmp(tab, "theme") != 0) {
+        pg_puts(&p, "<div class='col-12'><div class='warn'>Wrong pins leave the display or the "
+                    "audio silent. Change one group at a time and check the serial log if a "
+                    "peripheral stops working. Blank fields keep the stored value.</div></div>");
+    }
+
+    if (strcmp(tab, "audio") == 0) {
+    pg_puts(&p, "<div class='card col-12'><div class='card-title'>I2S audio</div>"
                 "<p class='hint' style='margin:0 0 12px'>Digital audio link to the microphone and "
                 "speaker or codec (INMP441 + MAX98357A, ES8388, ...).</p>"
                 "<div class='fields pins'>");
@@ -1374,16 +1625,20 @@ static esp_err_t hardware_get_handler(httpd_req_t *req) {
     hw_pin_field(&p, "mclk", "Master clock (MCLK)", hw.pin_i2s_mclk,
                  "Only codecs that need MCLK (e.g. ES8388); otherwise -1.");
     pg_puts(&p, "</div></div>");
+    } // tab: audio
 
-    pg_puts(&p, "<div class='card'><h2>I2C control</h2>"
+    if (strcmp(tab, "i2c") == 0) {
+    pg_puts(&p, "<div class='card col-12'><div class='card-title'>I2C control</div>"
                 "<p class='hint' style='margin:0 0 12px'>Control bus used by I2C audio codecs "
                 "(ES8388/ES8311) and I2C keypads or OLEDs.</p>"
                 "<div class='fields pins'>");
     hw_pin_field(&p, "sda", "Data (SDA)", hw.pin_i2c_sda, NULL);
     hw_pin_field(&p, "scl", "Clock (SCL)", hw.pin_i2c_scl, NULL);
     pg_puts(&p, "</div></div>");
+    } // tab: i2c
 
-    pg_puts(&p, "<div class='card'><h2>Display (SPI)</h2>"
+    if (strcmp(tab, "display") == 0) {
+    pg_puts(&p, "<div class='card col-12'><div class='card-title'>Display (SPI)</div>"
                 "<p class='hint' style='margin:0 0 12px'>SPI bus for the ST7789, ILI9341 or "
                 "GC9A01 panel.</p>"
                 "<div class='fields pins'>");
@@ -1398,8 +1653,10 @@ static esp_err_t hardware_get_handler(httpd_req_t *req) {
     hw_pin_field(&p, "tft_rst", "Reset (RST)", hw.pin_tft_rst,
                  "Reset line of the panel; -1 if tied to EN.");
     pg_puts(&p, "</div></div>");
+    } // tab: display
 
-    pg_puts(&p, "<div class='card'><h2>Touch</h2>"
+    if (strcmp(tab, "touch") == 0) {
+    pg_puts(&p, "<div class='card col-12'><div class='card-title'>Touch</div>"
                 "<p class='hint' style='margin:0 0 12px'>XPT2046 resistive touch controller "
                 "(shares the display SPI bus).</p>"
                 "<div class='fields pins'>");
@@ -1408,8 +1665,10 @@ static esp_err_t hardware_get_handler(httpd_req_t *req) {
     hw_pin_field(&p, "touch_irq", "Touch IRQ", hw.pin_touch_irq,
                  "Pen-down interrupt; optional (-1 polls instead).");
     pg_puts(&p, "</div></div>");
+    } // tab: touch
 
-    pg_puts(&p, "<div class='card wide'><h2>Display theme</h2>"
+    if (strcmp(tab, "theme") == 0) {
+    pg_puts(&p, "<div class='card col-12'><div class='card-title'>Display theme</div>"
                 "<p class='hint' style='margin:0 0 12px'>Look of the on-device screen. The theme "
                 "is drawn by LVGL and applied after the restart.</p><div class='fields'>");
     static const char *themes[] = { "Voice Assistant", "Mobile OS", "Smart Speaker" };
@@ -1417,9 +1676,10 @@ static esp_err_t hardware_get_handler(httpd_req_t *req) {
                  "Voice Assistant shows a clock and a glowing orb, Mobile OS looks like a phone "
                  "call screen, Smart Speaker fills the screen with a neon ring.");
     pg_puts(&p, "</div></div>"); // .fields .card
+    } // tab: theme
 
-    pg_puts(&p, "<div class='wide'><div class='savebar'>"
-                "<button class='btn' type='submit'>Save GPIO map &amp; restart</button>"
+    pg_puts(&p, "<div class='col-12'><div class='savebar'>"
+                "<button class='btn primary' type='submit'>Save GPIO map &amp; restart</button>"
                 "<span class='hint'>Every value is a GPIO number, -1 means not connected. "
                 "The device restarts so the drivers re-initialise.</span></div></div>");
     pg_puts(&p, "</div></form>"); // .grid
@@ -1548,6 +1808,7 @@ static void start_webserver(void) {
         { .uri = "/setup",       .method = HTTP_POST, .handler = setup_post_handler   },
         { .uri = "/hardware",    .method = HTTP_GET,  .handler = hardware_get_handler },
         { .uri = "/hardware",    .method = HTTP_POST, .handler = hardware_post_handler },
+        { .uri = "/volume",      .method = HTTP_POST, .handler = volume_post_handler  },
         { .uri = "/call",        .method = HTTP_POST, .handler = action_post_handler  },
         { .uri = "/answer",      .method = HTTP_POST, .handler = action_post_handler  },
         { .uri = "/hangup",      .method = HTTP_POST, .handler = action_post_handler  },

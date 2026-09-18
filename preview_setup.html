@@ -4,193 +4,134 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Settings - ESP32 SIP</title>
-<!-- Preview of the Settings page built by setup_get_handler() in main/ui_controller.c.
-     The CSS below is the same PAGE_CSS the firmware serves inline. -->
+<!-- Preview of the Settings page rendered by setup_get_handler() in main/ui_controller.c.
+     Each tab is its own URL (?tab=mode|wifi|sip|call|web); the "Mode & Audio" tab is shown. -->
 <style>
-:root{color-scheme:dark;}*{box-sizing:border-box;}
-body{margin:0;min-height:100vh;padding:16px;display:flex;justify-content:center;
-font-family:"Segoe UI",system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;
-color:#eaf4fb;background:linear-gradient(135deg,#0f2027,#203a43,#2c5364);}
-.wrap{width:100%;max-width:860px;}
-.grid{display:grid;gap:14px;align-items:start;}
-.grid>.wide{grid-column:1/-1;}
-@media(min-width:760px){.grid{grid-template-columns:1fr 1fr;}}
-.card{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.14);
-border-radius:16px;padding:20px;box-shadow:0 8px 32px rgba(0,0,0,.32);margin:0 0 14px;}
-.grid>.card{margin:0;}
-h1{font-size:21px;margin:0 0 4px;letter-spacing:.3px;}
-h2{font-size:12.5px;text-transform:uppercase;letter-spacing:1.1px;color:#8fd6ef;margin:0 0 4px;}
-.sub{font-size:12.5px;color:#9fb3c6;margin:0 0 14px;line-height:1.5;}
-.hint{display:block;font-size:11.5px;line-height:1.4;color:#8fa6ba;margin:5px 0 0;}
-label{display:block;font-size:11.5px;letter-spacing:.4px;text-transform:uppercase;color:#a8bccd;margin:0 0 5px;}
-input,select{width:100%;padding:10px 11px;border-radius:9px;font-size:14.5px;color:#fff;
-border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06);}
-input::placeholder{color:#7d90a3;}
-input:focus,select:focus{outline:none;border-color:#00d2ff;box-shadow:0 0 10px rgba(0,210,255,.4);}
+:root{--bg:#f4f6f9;--panel:#fff;--border:#e2e8f0;--text:#1e293b;--muted:#64748b;
+--primary:#2563eb;--primary-hover:#1d4ed8;--success:#10b981;--danger:#ef4444;--warning:#f59e0b;}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);
+color:var(--text);font-size:13px;line-height:1.4;padding:16px;}
+.wrap{max-width:900px;margin:0 auto;}
+.header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;
+background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px 16px;
+margin-bottom:16px;box-shadow:0 1px 2px rgba(0,0,0,.03);}
+.nav{display:flex;flex-wrap:wrap;gap:4px;}
+.nav a{color:var(--muted);text-decoration:none;font-weight:500;padding:5px 12px;border-radius:6px;}
+.nav a.on{background:#eff6ff;color:var(--primary);font-weight:600;}
+.status-badge{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;
+padding:3px 8px;border-radius:12px;text-transform:uppercase;}
+.status-badge::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;}
+.status-badge.ok{background:#d1fae5;color:#047857;}
+h1{font-size:16px;font-weight:700;margin-bottom:10px;}
+.sub{font-size:12px;color:var(--muted);margin-bottom:12px;}
+.tabs{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px;}
+.tabs a{font-size:12px;font-weight:600;padding:6px 12px;border-radius:6px;text-decoration:none;
+color:var(--muted);background:var(--panel);border:1px solid var(--border);}
+.tabs a.on{background:#eff6ff;color:var(--primary);border-color:#bfdbfe;}
+.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:12px;}
+.col-12{grid-column:span 12;}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:14px;
+box-shadow:0 1px 2px rgba(0,0,0,.02);}
+.card-title{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;
+color:var(--muted);margin-bottom:12px;}
 .fields{display:grid;gap:12px;}
-.fields.pins{grid-template-columns:1fr 1fr;}
 @media(min-width:540px){.fields{grid-template-columns:repeat(auto-fit,minmax(170px,1fr));}}
 .field{min-width:0;}
-.btn{display:block;width:100%;padding:12px;border:0;border-radius:10px;color:#fff;font-size:14.5px;
-font-weight:600;text-align:center;text-decoration:none;cursor:pointer;
-background:linear-gradient(90deg,#00d2ff,#3a7bd5);}
-.btn:hover{filter:brightness(1.08);}
+label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.4px;
+color:var(--muted);margin-bottom:5px;}
+input,select{width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;
+color:var(--text);background:#fff;font-family:inherit;}
+input:focus,select:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 2px #dbeafe;}
+input[type=range]{padding:0;border:0;background:none;accent-color:var(--primary);}
+.hint{display:block;font-size:11px;color:var(--muted);margin-top:5px;line-height:1.4;}
+.info{background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:10px 12px;font-size:12px;
+line-height:1.5;margin-bottom:12px;color:#1e40af;}
 .savebar{position:sticky;bottom:0;z-index:5;display:flex;flex-wrap:wrap;gap:12px;align-items:center;
-background:rgba(11,26,33,.94);border:1px solid rgba(255,255,255,.16);border-radius:14px;
-padding:12px 14px;margin-top:2px;box-shadow:0 -6px 24px rgba(0,0,0,.35);}
-.savebar .btn{margin:0;flex:1;min-width:150px;}
-.savebar .hint{margin:0;flex:1.5;min-width:170px;}
-.nav{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center;margin-bottom:14px;}
-.nav a{color:#cfe9f5;text-decoration:none;font-size:12.5px;padding:7px 12px;border-radius:999px;
-background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);}
-.nav a.on{background:linear-gradient(90deg,#00d2ff,#3a7bd5);border-color:transparent;color:#04121c;font-weight:700;}
-.navmode{font-size:10.5px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;padding:7px 11px;
-border-radius:999px;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.07);color:#cfe9f5;}
-.navmode.ok{color:#8bf3b6;}
-.info{background:rgba(0,210,255,.1);border:1px solid rgba(0,210,255,.45);border-radius:9px;
-padding:10px 12px;font-size:12.5px;line-height:1.5;margin-bottom:12px;}
-.foot{text-align:center;font-size:11.5px;color:#8ea4b8;padding:12px 0 2px;}
+background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 12px;
+box-shadow:0 -4px 16px rgba(0,0,0,.06);}
+.savebar .btn{width:auto;min-width:150px;padding:8px 18px;}
+.btn{width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:12px;
+font-weight:600;cursor:pointer;background:#fff;color:var(--text);text-align:center;
+display:inline-flex;align-items:center;justify-content:center;}
+.btn.primary{background:var(--primary);color:#fff;border-color:transparent;}
+.foot{text-align:center;font-size:11px;color:var(--muted);margin-top:24px;padding-top:12px;
+border-top:1px solid var(--border);}
 </style>
 </head>
 <body>
 <div class="wrap">
-    <nav class="nav">
-        <a href="/">Call</a>
-        <a href="/phonebook">Phonebook</a>
-        <a href="/setup" class="on">Settings</a>
-        <a href="/hardware">Hardware</a>
-        <a href="/logout">Logout</a>
-        <span class="navmode ok">Ready</span>
-    </nav>
+    <header class="header">
+        <nav class="nav">
+            <a href="/">Call</a>
+            <a href="/phonebook">Phonebook</a>
+            <a href="/setup" class="on">Settings</a>
+            <a href="/hardware">Hardware</a>
+            <a href="/logout">Logout</a>
+        </nav>
+        <span class="status-badge ok">Ready</span>
+    </header>
 
     <h1>Settings</h1>
     <p class="sub">Network and SIP account for this phone. Password fields are never shown again:
     leave them empty to keep the stored value.</p>
 
+    <nav class="tabs">
+        <a href="/setup?tab=mode" class="on">Mode &amp; Audio</a>
+        <a href="/setup?tab=wifi">Wi-Fi</a>
+        <a href="/setup?tab=sip">SIP Account</a>
+        <a href="/setup?tab=call">Calling</a>
+        <a href="/setup?tab=web">Web Login</a>
+    </nav>
+
     <form method="POST" action="/setup">
     <div class="grid">
-
-        <div class="card wide">
-            <h2>Mode</h2>
-            <p class="hint" style="margin:0 0 12px">How this device behaves when somebody calls it. Changes take effect on the next call, no restart.</p>
-            <div class="fields">
-                <div class="field">
-                    <label for="role">Device mode</label>
-                    <select id="role" name="role">
-                        <option value="0" selected>Phone - ring and answer manually</option>
-                        <option value="1">Speaker - answer incoming calls automatically</option>
-                    </select>
-                    <span class="hint"><b>Phone</b> rings until somebody answers on the keypad, screen or this page. <b>Speaker</b> picks up by itself: ideal for paging, intercom and doorbell use.</span>
-                </div>
-                <div class="field">
-                    <label for="auto_answer_delay">Auto-answer delay (s)</label>
-                    <input id="auto_answer_delay" name="auto_answer_delay" type="number" min="0" max="30" value="0">
-                    <span class="hint">Speaker mode only: 0 answers immediately, up to 30 s gives people time to move away from the speaker.</span>
-                </div>
-            </div>
-        </div>
-
-        <div class="card">
-            <h2>Wi-Fi</h2>
-            <p class="hint" style="margin:0 0 12px">The network this phone joins. Changing it restarts the device.</p>
-            <div class="fields">
-                <div class="field">
-                    <label for="ssid">Network name (SSID)</label>
-                    <input id="ssid" name="ssid" type="text" maxlength="31" value="MyHomeNetwork" placeholder="e.g. HomeNetwork">
-                    <span class="hint">2.4 GHz network name. The ESP32 cannot join 5 GHz-only networks.</span>
-                </div>
-                <div class="field">
-                    <label for="wifi_pass">Wi-Fi password</label>
-                    <input id="wifi_pass" name="wifi_pass" type="password" maxlength="63" autocomplete="new-password" placeholder="Leave empty to keep current">
-                    <span class="hint">Stored in NVS on the device. Empty keeps the current one.</span>
-                </div>
-            </div>
-        </div>
-
-        <div class="card">
-            <h2>SIP server</h2>
-            <p class="hint" style="margin:0 0 12px">The PBX or provider this phone registers with (Asterisk, FreePBX, antisip, ...).</p>
-            <div class="fields">
-                <div class="field">
-                    <label for="sip_server">Server</label>
-                    <input id="sip_server" name="sip_server" type="text" maxlength="63" value="sip.antisip.com" placeholder="192.168.1.100 or sip.provider.com">
-                    <span class="hint">IP address or hostname of the SIP server.</span>
-                </div>
-                <div class="field">
-                    <label for="sip_port">Port</label>
-                    <input id="sip_port" name="sip_port" type="number" min="1" max="65535" value="5060">
-                    <span class="hint">Usually 5060 (UDP).</span>
-                </div>
-                <div class="field">
-                    <label for="sip_domain">Domain / realm</label>
-                    <input id="sip_domain" name="sip_domain" type="text" maxlength="63" value="" placeholder="Defaults to the server">
-                    <span class="hint">Used in the From/To headers and digest auth. Empty = use the server.</span>
+        <div class="col-12">
+            <div class="card">
+                <div class="card-title">Mode &amp; audio</div>
+                <p class="hint" style="margin:0 0 12px">How this device behaves when somebody calls it,
+                and which audio hardware it drives.</p>
+                <div class="fields">
+                    <div class="field">
+                        <label for="role">Device mode</label>
+                        <select id="role" name="role">
+                            <option value="0" selected>Phone - ring and answer manually</option>
+                            <option value="1">Speaker - answer incoming calls automatically</option>
+                        </select>
+                        <span class="hint"><b>Phone</b> rings until somebody answers on the keypad, screen or this page. <b>Speaker</b> picks up by itself: ideal for paging, intercom and doorbell use.</span>
+                    </div>
+                    <div class="field">
+                        <label for="auto_answer_delay">Auto-answer delay (s)</label>
+                        <input id="auto_answer_delay" name="auto_answer_delay" type="number" min="0" max="30" value="0">
+                        <span class="hint">Speaker mode only: 0 answers immediately, up to 30 s gives people time to move away from the speaker.</span>
+                    </div>
+                    <div class="field">
+                        <label for="audio_out">Audio output</label>
+                        <select id="audio_out" name="audio_out">
+                            <option value="0" selected>Auto - detect the I2C codec, else plain I2S</option>
+                            <option value="1">Plain I2S amp - MAX98357A / PCM5102 (no control bus)</option>
+                            <option value="2">I2C codec - ES8388 / ES8311</option>
+                        </select>
+                        <span class="hint"><b>Plain I2S amp</b> for MAX98357A, PCM5102, UDA1334 and similar DACs that have no control bus (volume is then scaled in software). <b>I2C codec</b> for ES8388/ES8311 modules. <b>Auto</b> picks the codec when I2C pins are wired and it answers, otherwise a plain amp. Changing this restarts the device.</span>
+                    </div>
+                    <div class="field">
+                        <label for="volume">Volume</label>
+                        <input id="volume" name="volume" type="range" min="0" max="100" step="5" value="80">
+                        <span class="hint">Playback level, currently 80%. 0 mutes the speaker. Applies immediately, no restart.</span>
+                    </div>
                 </div>
             </div>
         </div>
-
-        <div class="card">
-            <h2>SIP account</h2>
-            <p class="hint" style="margin:0 0 12px">The credentials this phone authenticates with. Saving re-registers immediately, no restart.</p>
-            <div class="fields">
-                <div class="field">
-                    <label for="sip_user">Auth username</label>
-                    <input id="sip_user" name="sip_user" type="text" maxlength="63" value="doorbell_1" placeholder="1000">
-                    <span class="hint">Extension or account name assigned by the server.</span>
-                </div>
-                <div class="field">
-                    <label for="sip_pass">Auth password</label>
-                    <input id="sip_pass" name="sip_pass" type="password" maxlength="63" autocomplete="new-password" placeholder="Leave empty to keep current">
-                    <span class="hint">Leave empty to keep the stored password.</span>
-                </div>
-                <div class="field">
-                    <label for="display_name">Display name</label>
-                    <input id="display_name" name="display_name" type="text" maxlength="31" value="Front Door" placeholder="ESP32 Phone">
-                    <span class="hint">Name shown to the other party as the caller.</span>
-                </div>
-            </div>
-        </div>
-
-        <div class="card">
-            <h2>Calling</h2>
-            <p class="hint" style="margin:0 0 12px">What the physical button, the wake word and the web <b>Call</b> button dial.</p>
-            <div class="fields">
-                <div class="field">
-                    <label for="sip_target">Default call target</label>
-                    <input id="sip_target" name="sip_target" type="text" maxlength="63" value="sip:1001@sip.antisip.com" placeholder="sip:1001@192.168.1.100">
-                    <span class="hint">Full SIP URI, e.g. sip:1001@192.168.1.100 or sip:reception@provider.com.</span>
-                </div>
-            </div>
-        </div>
-
-        <div class="card">
-            <h2>Web access</h2>
-            <p class="hint" style="margin:0 0 12px">Credentials for this web interface. Changing them does not sign you out here.</p>
-            <div class="fields">
-                <div class="field">
-                    <label for="web_user">Login username</label>
-                    <input id="web_user" name="web_user" type="text" maxlength="31" value="admin" placeholder="admin">
-                    <span class="hint">Used together with the login password on the sign-in page.</span>
-                </div>
-                <div class="field">
-                    <label for="web_pass">Login password</label>
-                    <input id="web_pass" name="web_pass" type="password" maxlength="63" autocomplete="new-password" placeholder="Leave empty to keep current">
-                    <span class="hint">Change the factory default as soon as the device is on your network.</span>
-                </div>
-            </div>
-        </div>
-
-        <div class="wide">
+        <div class="col-12">
             <div class="savebar">
-                <button class="btn" type="submit">Save settings</button>
+                <button class="btn primary" type="submit">Save settings</button>
                 <span class="hint">SIP account and login changes apply immediately. Wi-Fi changes restart the device.</span>
             </div>
         </div>
-
     </div>
     </form>
 
-    <div class="foot">ESP32 SIP Voice v2.4.0 &middot; 192.168.1.42 &middot; Ready</div>
+    <footer class="foot">ESP32 SIP Voice v2.4.0 &middot; IP 192.168.1.42 &middot; Ready</footer>
 </div>
 </body>
 </html>

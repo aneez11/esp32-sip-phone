@@ -201,6 +201,12 @@
 //  an ES8388/ES8311 needs its registers configured over I2C. AUTO probes the
 //  I2C codec only when I2C pins are configured and falls back to plain I2S.
 // =====================================================================
+// Playback volume (0-100). Stored in NVS and adjustable at runtime from the web
+// UI; amps without a volume register (MAX98357A) are scaled in software.
+#define AUDIO_VOLUME_DEFAULT 80
+#define AUDIO_VOLUME_MAX     100
+#define AUDIO_VOLUME_STEP    5
+
 #define AUDIO_OUT_AUTO      0
 #define AUDIO_OUT_I2S_AMP   1
 #define AUDIO_OUT_ES8388    2

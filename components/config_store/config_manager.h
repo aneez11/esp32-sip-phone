@@ -12,6 +12,7 @@ typedef struct {
 
     // Audio output hardware: AUDIO_OUT_AUTO / AUDIO_OUT_I2S_AMP / AUDIO_OUT_ES8388.
     uint8_t audio_out;
+    uint8_t volume;                  // playback volume 0-100 (0 = mute)
 
     // Device role: DEVICE_ROLE_PHONE or DEVICE_ROLE_SPEAKER (auto-answer).
     uint8_t device_role;

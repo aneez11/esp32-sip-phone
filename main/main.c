@@ -76,6 +76,12 @@ void app_control_task(void *pvParameters) {
 
         // Add logic here to react to call state changes signaled FROM sip_client
         // e.g., if sip_client signals incoming call, update state, maybe ring a buzzer
+
+        // xEventGroupWaitBits returns immediately as soon as one of the waited-for
+        // bits is set, so the call above does not actually block once Wi-Fi is up.
+        // Yield here, otherwise this task spins at priority 6 and starves the idle
+        // task (task watchdog reset spam, and the web server starves too).
+        vTaskDelay(pdMS_TO_TICKS(200));
     }
 }
 

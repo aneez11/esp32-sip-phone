@@ -7,31 +7,34 @@
 <!-- Preview of the login page built by render_login() in main/ui_controller.c.
      The CSS below is the same PAGE_CSS the firmware serves inline. -->
 <style>
-:root{color-scheme:dark;}*{box-sizing:border-box;}
-body{margin:0;min-height:100vh;padding:16px;display:flex;justify-content:center;
-font-family:"Segoe UI",system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;
-color:#eaf4fb;background:linear-gradient(135deg,#0f2027,#203a43,#2c5364);}
-.wrap{width:100%;max-width:860px;}
-.card{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.14);
-border-radius:16px;padding:20px;box-shadow:0 8px 32px rgba(0,0,0,.32);margin:0 0 14px;max-width:420px;}
-h1{font-size:21px;margin:0 0 4px;letter-spacing:.3px;}
-.sub{font-size:12.5px;color:#9fb3c6;margin:0 0 14px;line-height:1.5;}
-label{display:block;font-size:11.5px;letter-spacing:.4px;text-transform:uppercase;color:#a8bccd;margin:0 0 5px;}
-input{width:100%;padding:10px 11px;border-radius:9px;font-size:14.5px;color:#fff;
-border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06);}
-input::placeholder{color:#7d90a3;}
-input:focus{outline:none;border-color:#00d2ff;box-shadow:0 0 10px rgba(0,210,255,.4);}
+:root{--bg:#f4f6f9;--panel:#fff;--border:#e2e8f0;--text:#1e293b;--muted:#64748b;
+--primary:#2563eb;--primary-hover:#1d4ed8;--success:#10b981;--danger:#ef4444;--warning:#f59e0b;}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);
+color:var(--text);font-size:13px;line-height:1.4;padding:16px;}
+.wrap{max-width:900px;margin:0 auto;}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:14px;
+box-shadow:0 1px 2px rgba(0,0,0,.02);max-width:420px;}
+h1{font-size:16px;font-weight:700;margin-bottom:10px;}
+.sub{font-size:12px;color:var(--muted);margin-bottom:12px;}
+label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.4px;
+color:var(--muted);margin-bottom:5px;}
+input{width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;
+color:var(--text);background:#fff;font-family:inherit;}
+input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 2px #dbeafe;}
 .fields{display:grid;gap:12px;}
 @media(min-width:540px){.fields{grid-template-columns:repeat(auto-fit,minmax(170px,1fr));}}
 .field{min-width:0;}
-.btn{display:block;width:100%;padding:12px;border:0;border-radius:10px;color:#fff;font-size:14.5px;
-font-weight:600;text-align:center;cursor:pointer;background:linear-gradient(90deg,#00d2ff,#3a7bd5);}
-.btn:hover{filter:brightness(1.08);}
-.err{background:rgba(203,45,62,.2);border:1px solid #cb2d3e;border-radius:9px;
-padding:10px 12px;font-size:12.5px;margin:0 0 12px;}
-.info{background:rgba(0,210,255,.1);border:1px solid rgba(0,210,255,.45);border-radius:9px;
-padding:10px 12px;font-size:12.5px;line-height:1.5;margin-bottom:12px;}
-.foot{text-align:center;font-size:11.5px;color:#8ea4b8;padding:12px 0 2px;}
+.btn{width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:12px;
+font-weight:600;cursor:pointer;background:#fff;color:var(--text);text-align:center;
+display:inline-flex;align-items:center;justify-content:center;}
+.btn.primary{background:var(--primary);color:#fff;border-color:transparent;}
+.err{background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:10px 12px;font-size:12px;
+margin-bottom:12px;color:#991b1b;}
+.info{background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:10px 12px;font-size:12px;
+line-height:1.5;margin-bottom:12px;color:#1e40af;}
+.foot{text-align:center;font-size:11px;color:var(--muted);margin-top:24px;padding-top:12px;
+border-top:1px solid var(--border);}
 </style>
 </head>
 <body>
@@ -59,7 +62,7 @@ padding:10px 12px;font-size:12.5px;line-height:1.5;margin-bottom:12px;}
                     <input id="pass" name="pass" type="password" maxlength="63" autocomplete="current-password">
                 </div>
             </div>
-            <button class="btn" type="submit" style="margin-top:14px">Sign in</button>
+            <button class="btn primary" type="submit" style="margin-top:14px">Sign in</button>
         </form>
     </div>
 

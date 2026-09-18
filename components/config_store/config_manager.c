@@ -28,6 +28,7 @@ static void apply_defaults(app_settings_t *settings) {
     snprintf(settings->sip_user, sizeof(settings->sip_user), "%s", SIP_USER);
     snprintf(settings->sip_password, sizeof(settings->sip_password), "%s", SIP_PASSWORD);
     settings->audio_out = AUDIO_OUT_DEFAULT;
+    settings->volume = AUDIO_VOLUME_DEFAULT;
     settings->device_role = DEVICE_ROLE_DEFAULT;
     settings->auto_answer_delay_s = AUTO_ANSWER_DELAY_DEFAULT;
     settings->sip_port = SIP_SERVER_PORT;
@@ -78,6 +79,10 @@ esp_err_t config_manager_load(app_settings_t *settings) {
     if (nvs_get_u8(my_handle, "audio_out", &audio_out) == ESP_OK && audio_out <= AUDIO_OUT_ES8388) {
         settings->audio_out = audio_out;
     }
+    uint8_t volume = 0;
+    if (nvs_get_u8(my_handle, "volume", &volume) == ESP_OK && volume <= AUDIO_VOLUME_MAX) {
+        settings->volume = volume;
+    }
     uint8_t role = 0;
     if (nvs_get_u8(my_handle, "role", &role) == ESP_OK && role <= DEVICE_ROLE_SPEAKER) {
         settings->device_role = role;
@@ -109,6 +114,7 @@ esp_err_t config_manager_save(const app_settings_t *settings) {
     nvs_set_str(my_handle, "web_pass", settings->web_password);
     nvs_set_u16(my_handle, "sip_port", settings->sip_port);
     nvs_set_u8(my_handle, "audio_out", settings->audio_out);
+    nvs_set_u8(my_handle, "volume", settings->volume);
     nvs_set_u8(my_handle, "role", settings->device_role);
     nvs_set_u8(my_handle, "auto_answer", settings->auto_answer_delay_s);
 

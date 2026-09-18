@@ -18,6 +18,7 @@ This project provides a robust, production-ready foundation for VoIP intercommun
 * **Edge AI Voice Activation (Wake Word)**: Integrated `esp-sr` WakeNet! The intercom constantly listens locally for a Wake Word (e.g., "Computer") to initiate a SIP call without physical interaction or cloud connectivity.
 * **PC Simulator**: Develop and test the LVGL User Interface directly on your Windows/Mac/Linux PC using the included SDL2 Simulator, without needing to flash the ESP32!
 * **Selectable Device Mode**: pick **Phone** (rings until somebody answers) or **Speaker** (auto-answers every incoming call) at runtime on the web UI — no recompile. Speaker mode turns the device into a paging/intercom endpoint and takes an optional 0-30 s pickup delay.
+* **Volume Control**: 0-100 % speaker level with **Mute / Unmute** and −/+ buttons on the status page, plus an exact slider in *Settings*. Applied instantly (software gain for amps without a volume register), persisted in NVS.
 * **Password-Protected Web UI**: Everything sits behind a **login page** (default `admin` / `esp32sip`, changeable in NVS). The in-device **Settings** page manages the **SIP server, port, domain, auth username/password, display name and default call target** as well as the Wi-Fi and web-login credentials — SIP/login changes are applied **without rebooting** (only Wi-Fi and GPIO changes restart the device).
 * **Hardware & Web Control**:
   * **Dynamic Hardware Config:** Change I2S, I2C, and SPI GPIO pins directly through the web interface without recompiling the firmware!
@@ -58,7 +59,16 @@ While this project is designed to be highly portable across ESP-IDF versions and
 
 The project includes a built-in lightweight HTTP server for configuration and call management.
 
-Every page shares one small inline stylesheet (no CDN, no external fonts, no JavaScript) and is mobile-first with a two-column layout on wider screens. Configuration is split into labeled sections, each field carries a one-line explanation of what it does, and long forms keep a sticky save bar in view. Pages are built into a buffer that grows only as far as the page needs, so a short page costs ~1 KB of heap. The footer identifies the firmware version, device IP and current mode.
+Every page shares one small inline stylesheet (no CDN, no external fonts, no JavaScript) styled after the project's `page-design.html` reference: light palette, header bar with navigation and a mode badge, 12-column responsive grid, cards with metric boxes and gauges, and colour-coded state banners. Pages are built into a buffer that grows only as far as the page needs, so a short page costs ~1 KB of heap. The footer identifies the firmware version, device IP and current mode.
+
+**Tabbed configuration.** *Settings* and *Hardware* are split into tabs, each rendered as its own URL so no JavaScript is needed:
+
+| Page | Tabs |
+|:--|:--|
+| Settings (`/setup`) | Mode & Audio · Wi-Fi · SIP Account · Calling · Web Login |
+| Hardware (`/hardware`) | I2S Audio · I2C Control · Display (SPI) · Touch · Theme |
+
+Because every field belongs to exactly one tab and an absent field means "keep the stored value", saving from any tab only changes that tab's settings — the rest of the configuration is left untouched.
 
 ### Login
 The first page you see is always the login page. The factory credentials are:
@@ -75,6 +85,7 @@ They live in `WEB_UI_USER` / `WEB_UI_PASSWORD` (`components/config_store/app_con
 `/setup` → the *Settings* page is reachable both in normal (station) mode and from the captive portal, and covers:
 
 * **Mode** — **Phone** rings and waits for a person (keypad, on-screen buttons, web UI); **Speaker** picks up every incoming call by itself after the configured delay (0-30 s), which is what a paging speaker, room intercom or doorbell wants. Applied to the next call, no restart.
+* **Volume** — playback level 0-100 % (0 mutes), plus the audio-output hardware. Applied immediately, no restart.
 * **Wi-Fi** — SSID + password. Changing these restarts the device (the ESP32 cannot join 5 GHz-only networks).
 * **SIP server** — server (IP or domain), port and domain/realm. The realm is only needed when the provider expects a specific one; leaving it empty uses the server address.
 * **SIP account** — **auth username**, **auth password** and display name. Saving re-registers the account **immediately, without a reboot**; if a call is in progress the new account is applied once the line goes idle, and a server name that cannot be resolved is retried with exponential backoff (5 s → 60 s).
@@ -189,6 +200,12 @@ Windows / macOS / Linux.
   * **No reboot for SIP/login changes.** `sip_client_reload()` re-resolves the server, drops the old binding (`REGISTER` with `Expires: 0`), re-arms the registration timer and re-registers with the new account from the SIP task. Only Wi-Fi and GPIO/theme changes still restart the device.
   * Web UI refreshed: shared glass theme, navigation bar, responsive layout, escaped output, and a rewritten `Hardware` page exposing all pins (incl. SPI/TFT/touch) plus the theme selector.
   * **Device modes:** new runtime **Phone / Speaker** role in the *Mode* card (stored in NVS). Speaker mode auto-answers incoming calls, optionally after a 0-30 s delay; the status page shows the role and what the phone is about to do.
+  * **Web UI redesigned** after `page-design.html`: light dashboard theme, header bar with a status badge, 12-column responsive grid, metric boxes with gauges for network/SIP/uptime, colour-coded state banners, and **tabbed Settings and Hardware pages** (`?tab=` URLs, still zero JavaScript).
+  * **Fixed an idle CPU spin:** `app_control_task` called `xEventGroupWaitBits` on bits that were already set, which returns immediately — the task spun at priority 6, starved the idle task and produced continuous task-watchdog warnings (and starved the web server) whenever the device was connected or in setup mode.
+  * **Audio output is now selectable at runtime** (*Auto* / *Plain I2S amp* / *I2C codec*). A MAX98357A/PCM5102 style amp has no control bus, so a build that probed an ES8388 over I2C used to fail codec init and never create the audio pipeline at all (silent device). Auto detects this and falls back to plain I2S; volume is then applied in software. `-1` for the mic pin now really means "not connected": I2S runs **TX-only** (playback only, no RX channel, no capture/encode).
+  * **Volume control** (0-100 %, mute, −/+) applied live and stored in NVS.
+  * **Fixed the repeating "woodpecker" ticking after a call:** the I2S TX channel stayed enabled while idle, so the peripheral looped the last DMA frames. TX is now muted when the pipeline stops and un-muted + primed with silence when a call starts (also at boot).
+  * **Fixed the 8 kHz playback clock:** with TX muted, the rate-change helper aborted on "channel not enabled yet" and a PCMU call kept running on the 16 kHz idle clock (half speed). It now tolerates a muted channel.
   * **Fixed a reset when placing a call:** building an INVITE needs ~3 KB of stack, but it ran in the caller's task (HTTP server 4 KB, button task 2 KB, FreeRTOS timer task 2 KB), which overflowed the stack and rebooted the board. All SIP signaling is now deferred to the SIP task (`SIP_ACTION_INVITE/ANSWER/HANGUP/REGISTER`), its stack was raised to 10 KB, the HTTP server to 6 KB, and the SIP loop polls every 200 ms so queued actions feel instant.
   * Hardening after review: login throttled with a timestamp-based lockout (5 failures → 30 s, no blocking sleep in the HTTP task); unchanged fields no longer count as changes (so a SIP-only save really does skip the reboot); over-length values are rejected instead of truncated; web credentials are not editable from the open setup AP; blank hardware pin fields are ignored; and a failed server lookup during reload backs off exponentially instead of polling DNS once a second.
 * **v2.3.0** - **Buildable & CI-Verified Release.** The firmware now compiles cleanly end-to-end and is build-checked automatically on every push/PR (GitHub Actions). The CI matrix builds the firmware for **ESP32** and **ESP32-S3** with ESP-IDF v5.1, plus the **SDL PC simulator** — all green.

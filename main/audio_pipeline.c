@@ -98,6 +98,8 @@ static void audio_io_task(void *pvParameters);
 static esp_err_t i2s_init(int sample_rate);
 static esp_err_t i2s_deinit(void);
 static void i2s_set_rate(audio_pipeline_t *p, int rate);
+static void i2s_prime_silence(void);
+static void i2s_tx_mute(bool mute);
 
 // ---- codec helpers ---------------------------------------------------------
 
@@ -215,7 +217,10 @@ audio_pipeline_handle_t audio_pipeline_init(void)
         return NULL;
     }
     codec_set_mic_gain(24);
-    codec_set_volume(80);
+    // Apply the stored playback volume (web "Volume" control).
+    app_settings_t settings;
+    config_manager_load(&settings);
+    codec_set_volume(settings.volume);
 
     if (xTaskCreate(audio_io_task, "audio_io", AUDIO_TASK_STACK_SIZE, p,
                     AUDIO_IO_TASK_PRIORITY, &p->audio_io_task_handle) != pdPASS)
@@ -286,8 +291,11 @@ esp_err_t audio_pipeline_start(audio_pipeline_handle_t handle, uint16_t local_rt
     }
 #endif
 
-    // Switch I2S to the codec's audio rate.
+    // Switch I2S to the codec's audio rate and un-mute the DAC (it is muted
+    // while idle so nothing repeats after the previous call).
     i2s_set_rate(p, p->codec_audio_rate);
+    i2s_tx_mute(false);
+    i2s_prime_silence();
 
     p->rtp_session = rtp_session_create(local_rtp_port);
     if (!p->rtp_session)
@@ -324,8 +332,11 @@ esp_err_t audio_pipeline_stop(audio_pipeline_handle_t handle)
     }
     aec_filter_deinit(&p->aec);
 
-    // Return to idle (wake-word) sample rate.
+    // Return to idle (wake-word) sample rate, then mute the DAC so the I2S
+    // peripheral stops looping the last audio frames (audible as a repeating
+    // ticking/"woodpecker" sound until the next call or a reboot).
     i2s_set_rate(p, IDLE_SAMPLE_RATE);
+    i2s_tx_mute(true);
     ESP_LOGI(TAG, "Pipeline stopped.");
     return ESP_OK;
 }
@@ -562,6 +573,8 @@ static esp_err_t i2s_init(int sample_rate)
         i2s_rx_handle = NULL;
         return ret;
     }
+    i2s_prime_silence();
+    i2s_tx_mute(true); // stay silent until a call actually starts
     ESP_LOGI(TAG, "I2S initialized @ %d Hz, 16-bit mono.", sample_rate);
     return ESP_OK;
 }
@@ -582,29 +595,63 @@ static esp_err_t i2s_deinit(void)
     return ret;
 }
 
+// Push silence into the DMA queue. Called right after the TX channel is
+// enabled so the peripheral never replays stale frames from the previous call.
+static void i2s_prime_silence(void)
+{
+    if (!i2s_tx_handle)
+        return;
+    static const int16_t silence[I2S_DMA_BUF_LEN] = {0};
+    size_t written = 0;
+    for (int i = 0; i < 2; i++)
+    {
+        i2s_channel_write(i2s_tx_handle, silence, sizeof(silence), &written, pdMS_TO_TICKS(50));
+    }
+}
+
+// Mute the DAC between calls. Leaving the channel enabled makes the I2S
+// peripheral loop the last DMA frames forever, which the amplifier turns into
+// a repeating "woodpecker" ticking sound until the next call or a reboot.
+static void i2s_tx_mute(bool mute)
+{
+    if (!i2s_tx_handle)
+        return;
+    esp_err_t ret = mute ? i2s_channel_disable(i2s_tx_handle) : i2s_channel_enable(i2s_tx_handle);
+    if (ret == ESP_OK)
+    {
+        ESP_LOGI(TAG, "I2S TX %s", mute ? "muted (idle: no repeated DMA frames)" : "enabled");
+    }
+    else if (ret != ESP_ERR_INVALID_STATE)
+    {
+        ESP_LOGW(TAG, "I2S TX %s failed: %d", mute ? "mute" : "enable", ret);
+    }
+}
+
 static void i2s_set_rate(audio_pipeline_t *p, int rate)
 {
     if (p->current_i2s_rate == rate || !i2s_tx_handle)
         return;
+
+    // The TX channel is muted while idle, so "disable" may legitimately report
+    // ESP_ERR_INVALID_STATE (never enabled). That must not abort the rate change,
+    // otherwise an 8 kHz call keeps running on the 16 kHz idle clock.
+    i2s_channel_disable(i2s_tx_handle);
+    if (i2s_rx_handle)
+        i2s_channel_disable(i2s_rx_handle);
+
     i2s_std_clk_config_t clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(rate);
-    esp_err_t ret = i2s_channel_disable(i2s_tx_handle);
-    if (ret == ESP_OK && i2s_rx_handle)
-        ret = i2s_channel_disable(i2s_rx_handle);
-    if (ret == ESP_OK)
-        ret = i2s_channel_reconfig_std_clock(i2s_tx_handle, &clk_cfg);
+    esp_err_t ret = i2s_channel_reconfig_std_clock(i2s_tx_handle, &clk_cfg);
     if (ret == ESP_OK && i2s_rx_handle)
         ret = i2s_channel_reconfig_std_clock(i2s_rx_handle, &clk_cfg);
-    if (ret == ESP_OK)
-        ret = i2s_channel_enable(i2s_tx_handle);
-    if (ret == ESP_OK && i2s_rx_handle)
-        ret = i2s_channel_enable(i2s_rx_handle);
-    if (ret == ESP_OK)
-    {
-        p->current_i2s_rate = rate;
-        ESP_LOGI(TAG, "I2S sample rate -> %d Hz", rate);
-    }
-    else
+    if (ret != ESP_OK)
     {
         ESP_LOGW(TAG, "i2s_set_clk(%d) failed: %d", rate, ret);
+        return;
     }
+
+    if (i2s_rx_handle)
+        i2s_channel_enable(i2s_rx_handle); // capture side only
+    p->current_i2s_rate = rate;
+    ESP_LOGI(TAG, "I2S sample rate -> %d Hz", rate);
+    // TX is left disabled here: start() un-mutes it, stop() keeps it muted.
 }
