@@ -1,6 +1,14 @@
-# ESP32-SIP-Voice partition table for a 4 MB ESP32 board.
-# Wake word is disabled, so the extra 5 MB model partition is removed.
-# Name,     Type, SubType,  Offset,   Size
-nvs,        data, nvs,      0x9000,   0x6000,
-phy_init,   data, phy,      0xf000,   0x1000,
-factory,    app,  factory,  0x10000,  0x200000,
+# ESP32-SIP-Voice partition table with OTA support (16 MB flash).
+#
+# Two OTA app slots (A/B) plus the otadata selector make over-the-air updates
+# and automatic rollback possible. ota_0 is where the first serial flash lands;
+# an update is written to the inactive slot and only replaces it after the new
+# image boots and confirms it is healthy.
+#
+# For a 4 MB board, shrink ota_0/ota_1 to 0x180000 and drop the spare tail.
+# Name,     Type, SubType,  Offset,     Size
+nvs,        data, nvs,      0x9000,     0x6000,
+otadata,    data, ota,      0xf000,     0x2000,
+phy_init,   data, phy,      0x11000,    0x1000,
+ota_0,      app,  ota_0,    0x20000,    0x400000,
+ota_1,      app,  ota_1,    0x420000,   0x400000,

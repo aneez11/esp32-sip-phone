@@ -49,7 +49,7 @@ menu "ESP32 SIP Voice Configuration"
 
         config SIP_MATRIX_MAX7219
             bool "MAX7219 8x8 array backend (single-line ticker)"
-            default n
+            default y
             help
                 Compile the MAX7219 8x8 module-chain backend (SPI bit-bang).
                 Cheap and Wokwi-simulatable; used as a one-line caller-ID
@@ -61,7 +61,7 @@ menu "ESP32 SIP Voice Configuration"
 
         config SIP_ETH_ENC28J60
             bool "ENC28J60 SPI Ethernet (wired LAN)"
-            default n
+            default y
             select ETH_USE_SPI_ETHERNET
             help
                 Add wired networking through a Microchip ENC28J60 10 Mbps SPI

@@ -34,6 +34,7 @@ idf_component_register(
         # Project components (../components/*)
         config_store
         eth_manager
+        ota_manager
         audio_pipeline
         board_hal
         storage

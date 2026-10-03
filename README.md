@@ -19,7 +19,7 @@ This project provides a robust, production-ready foundation for VoIP intercommun
 * **PC Simulator**: Develop and test the LVGL User Interface directly on your Windows/Mac/Linux PC using the included SDL2 Simulator, without needing to flash the ESP32!
 * **Selectable Device Mode**: pick **Phone** (rings until somebody answers) or **Speaker** (auto-answers every incoming call) at runtime on the web UI — no recompile. Speaker mode turns the device into a paging/intercom endpoint and takes an optional 0-30 s pickup delay.
 * **Volume Control**: 0-100 % speaker level with **Mute / Unmute** and −/+ buttons on the status page, plus an exact slider in *Settings*. Applied instantly (software gain for amps without a volume register), persisted in NVS.
-* **Password-Protected Web UI**: Everything sits behind a **login page** (default `admin` / `esp32sip`, changeable in NVS). The in-device **Settings** page manages the **SIP server, port, domain, auth username/password, display name and default call target** as well as the Wi-Fi and web-login credentials — SIP/login changes are applied **without rebooting** (only Wi-Fi and GPIO changes restart the device).
+* **Password-Protected Web UI**: Everything sits behind a **login page** (default `admin` / `infinityecho`, changeable in NVS). The in-device **Settings** page manages the **SIP server, port, domain, auth username/password, display name and default call target** as well as the Wi-Fi and web-login credentials — SIP/login changes are applied **without rebooting** (only Wi-Fi and GPIO changes restart the device).
 * **Hardware & Web Control**:
   * **Dynamic Hardware Config:** Change I2S, I2C, and SPI GPIO pins directly through the web interface without recompiling the firmware!
   * Captive Portal for Wi-Fi and SIP credentials setup.
@@ -75,7 +75,7 @@ The first page you see is always the login page. The factory credentials are:
 
 | Username | Password |
 |:---:|:---:|
-| `admin` | `esp32sip` |
+| `admin` | `infinityecho` |
 
 They live in `WEB_UI_USER` / `WEB_UI_PASSWORD` (`components/config_store/app_config.h`) and can be changed at runtime on the **Settings** page. Signing in issues an `ESPAUTH` session cookie (8 h, sliding); **Logout** drops it. Unauthenticated requests are redirected to `/login`.
 
@@ -164,7 +164,96 @@ ESP32-SIP-Voice/
 5. **(Wake word)** Flash a WakeNet model into the `model` partition (defined in `partitions.csv`). With `CONFIG_MODEL_IN_SPIFFS=y` the model is bundled automatically by esp-sr during `flash`. Needs an 8 MB board; on 4 MB boards set `USE_WAKE_WORD 0`.
 6. **(OPUS / PRO)** OPUS is compiled only when libopus is on the include path. Add an IDF opus component to `components/audio_pipeline/idf_component.yml` (e.g. `chmorgan/esp32-libopus`) — `opus_codec.c` auto-detects `<opus.h>`.
 
-## PC Simulator (UI Preview)
+## Reference Wiring — ESP32-S3 N16R8 (PCM5102A + ENC28J60 + MAX7219)
+
+This is the reference build for an **ESP32-S3-WROOM-1 N16R8** (16 MB flash, 8 MB octal PSRAM) driving three peripherals: a **PCM5102A** I2S DAC, an **ENC28J60** SPI Ethernet controller, and a chain of **4 × MAX7219 8×8** modules. The defaults below are compiled into `components/config_store/app_config.h` and are the ones flashed on this configuration.
+
+> **PSRAM reservation:** on an N16R8 module the octal PSRAM uses **GPIO33–37**. Never assign those pins. GPIO 0, 3, 45, 46 are strapping pins (sampled only at boot) — safe as outputs afterwards.
+
+### Audio — PCM5102A (I2S DAC)
+| PCM5102A | ESP32-S3 GPIO | Notes |
+|:--|:--|:--|
+| BCK (SCK) | **GPIO 5** | bit clock |
+| DIN | **GPIO 6** | audio data |
+| LRCK (WS) | **GPIO 7** | word select |
+| SCK | GND | PCM5102A needs no MCLK |
+| FLT / DEMP | GND | default filter / de-emphasis |
+| XSMT | 3V3 | un-mute (hold high) |
+| VIN / GND | 3V3 / GND | |
+
+Firmware: `I2S_BCK_PIN=5`, `I2S_DATA_OUT_PIN=6`, `I2S_WS_PIN=7`; Audio output = *I2S amp (PCM5102)*.
+
+### LED matrix — 4 × MAX7219 (8×8×4 chain)
+| MAX7219 module | ESP32-S3 GPIO | Notes |
+|:--|:--|:--|
+| DIN (first module) | **GPIO 10** | data in |
+| CLK | **GPIO 11** | shift clock |
+| CS | **GPIO 12** | load/latch |
+| VCC | 5 V | modules usually want 5 V |
+| GND | GND | common ground |
+
+Chain `module1 DOUT → module2 DIN → … → module4`. Firmware: `MX_MAX7219_DIN=10`, `MX_MAX7219_CLK=11`, `MX_MAX7219_CS=12`; Type = *MAX7219*, Modules = *4* (the `SIP_MATRIX_MAX7219` backend is enabled by default).
+
+### Ethernet — ENC28J60 (SPI)
+| ENC28J60 | ESP32-S3 GPIO | Notes |
+|:--|:--|:--|
+| SCK | **GPIO 47** | dedicated SPI clock |
+| SI (MOSI) | **GPIO 48** | |
+| SO (MISO) | **GPIO 21** | |
+| CS | **GPIO 3** | chip select |
+| INT | **GPIO 14** | required — driver is interrupt-driven |
+| RST | **GPIO 45** | or tie to 3V3 (then set `-1`) |
+| VCC / GND | 3V3 / GND | add a 100 nF decoupling cap at the module |
+
+Firmware: `ETH_PIN_*` defaults and the `SIP_ETH_ENC28J60` option (enabled by default). Set **Network Mode** on the status page to *Auto* (Ethernet when a cable is present, else Wi-Fi) or *Ethernet only*. ENC28J60 is 10 Mbps — fine for SIP / G.711 / G.722.
+
+### Combined map
+| Function | GPIO |
+|:--|:--|
+| PCM5102A BCK / DIN / LRCK | 5 / 6 / 7 |
+| MAX7219 DIN / CLK / CS | 10 / 11 / 12 |
+| ENC28J60 SCK / SI / SO / CS / INT / RST | 47 / 48 / 21 / 3 / 14 / 45 |
+| USB-Serial-JTAG (console/flash) | 19 / 20 — leave free |
+| PSRAM — reserved | 33–37 |
+
+The TFT, touch and keypad peripherals are not used in this configuration; their defaults remain in the header for other boards. The ENC28J60 and the TFT defaults both reference GPIO 47/48/21 — if you also fit the TFT, move one of the two bus pin sets (e.g. TFT CS off 21).
+
+## OTA Firmware Updates
+
+The firmware supports **over-the-air updates** with an A/B (dual-slot) layout, so a
+bad image cannot brick the device.
+
+* **Partition table** (`partitions.csv`): `ota_0` + `ota_1` (2 × 4 MB) with an
+  `otadata` selector. The app is written to the *inactive* slot; the active one is
+  only replaced after the new image boots successfully.
+* **Automatic rollback**: updates install with `PENDING_VERIFY`. The firmware
+  confirms itself via `ota_mark_valid()` once `app_main()` finishes (see
+  `main/main.c`); if the new image crashes or reboots before that, the bootloader
+  returns to the previous slot. Requires `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`
+  and `CONFIG_APP_ROLLBACK_ENABLE=y` (both enabled in `sdkconfig`).
+
+### Updating
+Open **Firmware** in the web UI (`/firmware`), sign in, then either:
+
+1. **Upload a file** — pick `build/esp32_sip_voice.bin` produced by `idf.py build`.
+   The browser POSTs it to `/ota_upload` (multipart), which streams it into the
+   spare slot. Works entirely on the local network, no server needed.
+2. **Update from a URL** — enter an `http(s)://` link to a `.bin` (GitHub release
+   asset, your own web server, …). `POST /ota_url` starts a worker that downloads
+   and installs it. For a private/self-signed server, keep the URL on plain `http`
+   or a public CA, since only the default certificate bundle is trusted.
+
+Progress and the result are shown on the page; the device reboots when the update
+is installed and comes back on the new firmware.
+
+### First-time note
+Adding OTA changes the partition layout, so a device flashed with the old
+single-`factory` table must be re-flashed **over serial once**
+(`idf.py -p (PORT) erase-flash flash`). After that, updates can be done entirely
+over the air. The `ota_0`/`ota_1` slots are sized for 16 MB flash; for a 4 MB
+board shrink them to `0x180000` (see the comment in `partitions.csv`).
+
+
 
 You can develop and preview the LVGL themes natively on your PC with SDL2 — no
 ESP32 required. The simulator compiles the exact same `components/ui_lvgl/ui_lvgl.c`

@@ -14,6 +14,7 @@
 #include <string.h>
 
 #include "net_manager.h"
+#include "ota_manager.h"
 #include "sip_client.h"
 #include "audio_pipeline.h"
 #include "app_config.h" // Include configurations
@@ -315,6 +316,10 @@ void app_main(void) {
 
 
     ESP_LOGI(TAG, "Initialization Complete. Waiting for Wi-Fi connection...");
+
+    // The firmware reached the end of initialisation, so a freshly OTA-installed
+    // image can be confirmed; otherwise the bootloader would roll it back.
+    ota_mark_valid();
 
     // Tasks for WiFi events, SIP, Audio are created within their respective init functions usually.
     // The system now runs on FreeRTOS tasks. app_main finishes here.

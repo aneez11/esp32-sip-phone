@@ -187,22 +187,24 @@ esp_err_t config_manager_load_hw(hardware_settings_t *hw_settings) {
     nvs_handle_t my_handle;
     esp_err_t err;
 
-    // Set defaults (fallback to app_config.h values if possible, or -1 if unassigned)
-    hw_settings->pin_i2s_bck = -1;
-    hw_settings->pin_i2s_ws = -1;
-    hw_settings->pin_i2s_dout = -1;
-    hw_settings->pin_i2s_din = -1;
-    hw_settings->pin_i2s_mclk = -1;
-    hw_settings->pin_i2c_sda = -1;
-    hw_settings->pin_i2c_scl = -1;
-    hw_settings->pin_spi_mosi = -1;
-    hw_settings->pin_spi_miso = -1;
-    hw_settings->pin_spi_clk = -1;
-    hw_settings->pin_tft_cs = -1;
-    hw_settings->pin_tft_dc = -1;
-    hw_settings->pin_tft_rst = -1;
-    hw_settings->pin_touch_cs = -1;
-    hw_settings->pin_touch_irq = -1;
+    // Seed every pin with the compile-time default for this target (app_config.h)
+    // so the Hardware web page shows the real wiring, not -1, before anything is
+    // saved to NVS. Any stored value below overrides it.
+    hw_settings->pin_i2s_bck = I2S_BCK_PIN;
+    hw_settings->pin_i2s_ws = I2S_WS_PIN;
+    hw_settings->pin_i2s_dout = I2S_DATA_OUT_PIN;
+    hw_settings->pin_i2s_din = I2S_DATA_IN_PIN;
+    hw_settings->pin_i2s_mclk = -1;         // no MCLK on the default I2S amp/DAC map
+    hw_settings->pin_i2c_sda = CODEC_I2C_SDA_PIN;
+    hw_settings->pin_i2c_scl = CODEC_I2C_SCL_PIN;
+    hw_settings->pin_spi_mosi = TFT_MOSI;
+    hw_settings->pin_spi_miso = -1;         // not used by the SPI TFT panel
+    hw_settings->pin_spi_clk = TFT_SCLK;
+    hw_settings->pin_tft_cs = TFT_CS;
+    hw_settings->pin_tft_dc = TFT_DC;
+    hw_settings->pin_tft_rst = TFT_RST;
+    hw_settings->pin_touch_cs = TOUCH_CS;
+    hw_settings->pin_touch_irq = TOUCH_IRQ;
     // LED matrix — fall back to the target-specific app_config.h defaults.
     hw_settings->pin_mx_r1 = MX_HUB75_R1;
     hw_settings->pin_mx_g1 = MX_HUB75_G1;

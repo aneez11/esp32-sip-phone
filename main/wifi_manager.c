@@ -76,19 +76,19 @@ static void dns_server_task(void *pvParameters) {
 
 static void start_ap_mode(void) {
     s_is_ap_mode = true;
-    ESP_LOGI(TAG, "Starting AP Mode: ESP-SIP-Setup");
+    ESP_LOGI(TAG, "Starting AP Mode: Infinity Echo");
     esp_wifi_stop();
     
     ap_netif = esp_netif_create_default_wifi_ap();
     
     wifi_config_t wifi_config = {
         .ap = {
-            .ssid = "ESP-SIP-Setup",
-            .ssid_len = strlen("ESP-SIP-Setup"),
+            .ssid = "Infinity Echo",
+            .ssid_len = strlen("Infinity Echo"),
             .channel = 1,
-            .password = "",
+            .password = "infinityecho",
             .max_connection = 4,
-            .authmode = WIFI_AUTH_OPEN
+            .authmode = WIFI_AUTH_WPA2_PSK
         },
     };
     esp_wifi_set_mode(WIFI_MODE_AP);

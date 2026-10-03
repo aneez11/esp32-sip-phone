@@ -47,13 +47,27 @@
 //  Hardware -> Network tab (like the other peripherals). INT is mandatory
 //  because the driver is interrupt-driven; RST may be tied to VCC (-1).
 //  SCK/MOSI/MISO use a dedicated SPI bus (SPI3 on ESP32/S3, SPI2 on C3).
+//  The ESP32-S3 target overrides these with concrete pins below; other
+//  targets keep -1 and are configured at runtime.
 // =====================================================================
+#ifndef ETH_PIN_CS
 #define ETH_PIN_CS     (-1)
+#endif
+#ifndef ETH_PIN_INT
 #define ETH_PIN_INT    (-1)
+#endif
+#ifndef ETH_PIN_RST
 #define ETH_PIN_RST    (-1)
+#endif
+#ifndef ETH_PIN_SCK
 #define ETH_PIN_SCK    (-1)
+#endif
+#ifndef ETH_PIN_MISO
 #define ETH_PIN_MISO   (-1)
+#endif
+#ifndef ETH_PIN_MOSI
 #define ETH_PIN_MOSI   (-1)
+#endif
 
 #if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(__esp32c3__)
   #define ETH_SPI_HOST SPI2_HOST
@@ -159,9 +173,10 @@
 //     the Web "HW Config" page). Pin numbers are TARGET-SPECIFIC because, e.g.,
 //     GPIO22-25 do not exist on ESP32-S3 and only GPIO0-21 exist on ESP32-C3. ---
 #if defined(CONFIG_IDF_TARGET_ESP32S3) || defined(__esp32s3__)
+  // --- PCM5102A I2S DAC (BCLK / DIN / LRCK) ---
   #define I2S_BCK_PIN        5
-  #define I2S_WS_PIN         6
-  #define I2S_DATA_OUT_PIN   7
+  #define I2S_WS_PIN         7
+  #define I2S_DATA_OUT_PIN   6
   #define I2S_DATA_IN_PIN    4
   #define CODEC_I2C_SCL_PIN  8
   #define CODEC_I2C_SDA_PIN  9
@@ -184,6 +199,23 @@
   #define TFT_RST  41
   #define TOUCH_CS  18
   #define TOUCH_IRQ 38
+  // --- MAX7219 8x8 chain (the "8x8x4" ticker) ---
+  #define MX_MAX7219_DIN  10
+  #define MX_MAX7219_CLK  11
+  #define MX_MAX7219_CS   12
+  // --- ENC28J60 SPI Ethernet (own SPI bus, avoids TFT/touch pins) ---
+  #undef ETH_PIN_SCK
+  #undef ETH_PIN_MOSI
+  #undef ETH_PIN_MISO
+  #undef ETH_PIN_CS
+  #undef ETH_PIN_INT
+  #undef ETH_PIN_RST
+  #define ETH_PIN_SCK    47
+  #define ETH_PIN_MOSI   48
+  #define ETH_PIN_MISO   21
+  #define ETH_PIN_CS      3
+  #define ETH_PIN_INT    14
+  #define ETH_PIN_RST    45
 #elif defined(CONFIG_IDF_TARGET_ESP32C3) || defined(__esp32c3__)
   #define I2S_BCK_PIN        4
   #define I2S_WS_PIN         5
@@ -262,9 +294,7 @@
   #define MX_HUB75_CLK  1
   #define MX_HUB75_LAT  2
   #define MX_HUB75_OE   42
-  #define MX_MAX7219_DIN  10
-  #define MX_MAX7219_CLK  11
-  #define MX_MAX7219_CS   12
+  // MAX7219 pins are defined per-target in the pin-map block above.
 #else
   // Classic ESP32 / C3: no default HUB75 map (pins are tight and HUB75 shares
   // the I2S peripheral); configure at runtime or use the MAX7219 ticker.
@@ -370,7 +400,7 @@
 // behind it requires a valid session cookie. These are the factory defaults,
 // they are overridable at runtime from the web "Settings" page (NVS).
 #define WEB_UI_USER            "admin"
-#define WEB_UI_PASSWORD        "esp32sip"
+#define WEB_UI_PASSWORD        "infinityecho"
 #define WEB_SESSION_TIMEOUT_S  28800    // 8 h session lifetime (sliding)
 
 // --- Shared application event-group bits ---

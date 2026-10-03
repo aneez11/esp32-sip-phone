@@ -4,6 +4,7 @@
 #include "config_manager.h"
 #include "wifi_manager.h"
 #include "net_manager.h"
+#include "ota_manager.h"
 #include "esp_netif.h"
 #include "phonebook.h"
 #include "esp_log.h"
@@ -591,6 +592,7 @@ static void pg_nav(page_t *p, const char *active) {
     }
     nav_link(p, "/setup", "Settings", strcmp(active, "setup") == 0);
     if (!ap) nav_link(p, "/hardware", "Hardware", strcmp(active, "hardware") == 0);
+    if (!ap) nav_link(p, "/firmware", "Firmware", strcmp(active, "firmware") == 0);
     nav_link(p, "/logout", "Logout", false);
     pg_printf(p, "</nav><span class='status-badge %s'>%s</span></header>",
               mode_class(m), mode_name(m));
@@ -2003,6 +2005,207 @@ static esp_err_t netmode_post_handler(httpd_req_t *req) {
 
 static httpd_handle_t server = NULL;
 
+// =====================================================================
+//  OTA firmware update
+// =====================================================================
+static void render_ota_page(httpd_req_t *req, const char *note, bool is_error) {
+    page_t p;
+    pg_init(&p, PAGE_MIN_CAP);
+    pg_head(&p, "Firmware - ESP32 SIP", 0);
+    pg_nav(&p, "call");
+
+    pg_puts(&p, "<div class='card'><h1>Firmware Update</h1>");
+    pg_printf(&p, "<p class='sub'>Running version <b>%s</b>. Updates are installed into the "
+                  "spare slot and kept only if the new firmware boots and stays healthy; a "
+                  "failed boot rolls back automatically.</p>", ota_running_version());
+    if (note && note[0]) {
+        pg_printf(&p, "<div class='%s'>", is_error ? "err" : "ok");
+        pg_escape(&p, note);
+        pg_puts(&p, "</div>");
+    }
+
+    // Status
+    pg_puts(&p, "<div class='card-title' style='margin-top:8px'>Status</div>");
+    pg_printf(&p, "<p class='sub'>%s</p>", ota_state_text());
+    int prog = ota_progress();
+    if (prog >= 0 && ota_in_progress()) {
+        pg_printf(&p, "<div class='gauge'><div class='gauge-track'>"
+                      "<div class='gauge-fill' style='width:%d%%'></div></div></div>", prog);
+    }
+
+    // Method 1: upload a .bin
+    pg_puts(&p, "<div class='card-title' style='margin-top:16px'>Upload a firmware file</div>"
+                "<p class='hint' style='margin:0 0 12px'>Select the <code>esp32_sip_voice.bin</code> "
+                "produced by <code>idf.py build</code> (in the <code>build/</code> folder). "
+                "Do not power off during the update.</p>"
+                "<form method='POST' action='/ota_upload' enctype='multipart/form-data'>"
+                "<input type='file' name='firmware' accept='.bin' required "
+                "style='margin-bottom:12px;width:100%'>"
+                "<button class='btn success' type='submit'>Upload &amp; Install</button></form>");
+
+    // Method 2: pull from a URL
+    pg_puts(&p, "<div class='card-title' style='margin-top:16px'>Update from URL</div>"
+                "<p class='hint' style='margin:0 0 12px'>The device downloads the firmware "
+                "directly (http or https), e.g. a GitHub release asset or your own server.</p>"
+                "<form method='POST' action='/ota_url'>"
+                "<input type='text' name='url' placeholder='https://example.com/esp32_sip_voice.bin' "
+                "style='width:100%;margin-bottom:12px' required>"
+                "<button class='btn' type='submit'>Download &amp; Install</button></form>");
+
+    pg_puts(&p, "<p class='hint' style='margin-top:16px'>If the new image does not boot, the "
+                "bootloader returns to this version automatically.</p></div>");
+    pg_device_footer(&p);
+    pg_foot(&p);
+    send_page(req, &p);
+}
+
+static esp_err_t ota_get_handler(httpd_req_t *req) {
+    if (!require_login(req)) return ESP_OK;
+    render_ota_page(req, NULL, false);
+    return ESP_OK;
+}
+
+// Runs in a worker task so the HTTP handler returns immediately. The upload is
+// consumed by the parent task, so the child only performs URL downloads.
+static void ota_url_task(void *arg) {
+    char *url = (char *)arg;
+    ota_update_from_url(url);
+    free(url);
+    vTaskDelete(NULL);
+}
+
+static esp_err_t ota_url_post_handler(httpd_req_t *req) {
+    if (!require_login(req)) return ESP_OK;
+    if (ota_in_progress()) {
+        render_ota_page(req, "An update is already in progress.", true);
+        return ESP_OK;
+    }
+    if (req->content_len <= 0 || req->content_len > 512) {
+        render_ota_page(req, "Invalid request.", true);
+        return ESP_OK;
+    }
+    char buf[768];
+    int ret = httpd_req_recv(req, buf, req->content_len);
+    if (ret <= 0) { render_ota_page(req, "Could not read request.", true); return ESP_OK; }
+    buf[ret] = '\0';
+
+    char url[512] = {0};
+    if (!form_get(buf, "url", url, sizeof(url)) || !url[0] ||
+        (strncmp(url, "http://", 7) != 0 && strncmp(url, "https://", 8) != 0)) {
+        render_ota_page(req, "Enter a valid http:// or https:// URL.", true);
+        return ESP_OK;
+    }
+    char *copy = strdup(url);
+    if (!copy) { render_ota_page(req, "Out of memory.", true); return ESP_OK; }
+    if (xTaskCreate(ota_url_task, "ota_url", 8192, copy, 5, NULL) != pdPASS) {
+        free(copy);
+        render_ota_page(req, "Could not start the update task.", true);
+        return ESP_OK;
+    }
+    render_ota_page(req, "Download started. This page keeps polling; the device reboots "
+                         "when the update is installed.", false);
+    return ESP_OK;
+}
+
+// Streams a multipart/form-data body, writing only the file part into flash.
+static esp_err_t ota_upload_post_handler(httpd_req_t *req) {
+    if (!require_login(req)) return ESP_OK;
+    if (ota_in_progress()) {
+        render_ota_page(req, "An update is already in progress.", true);
+        return ESP_OK;
+    }
+
+    size_t remaining = req->content_len;
+    size_t bufsize = (remaining < 2048) ? remaining : 2048;
+    char *buf = malloc(bufsize);
+    if (!buf) { render_ota_page(req, "Out of memory.", true); return ESP_OK; }
+
+    size_t received = 0;
+    char boundary[80] = {0};
+    bool in_data = false, done = false;
+    bool started = false;
+    int  pre = 0;          // bytes held from the previous chunk
+    size_t pre_len = 0;
+    esp_err_t result = ESP_OK;
+
+    while (remaining > 0 && !done) {
+        size_t want = (remaining < bufsize) ? remaining : bufsize;
+        int r = httpd_req_recv(req, buf + pre, want);
+        if (r <= 0) { result = ESP_FAIL; break; }
+        remaining -= r;
+        received += r;
+        size_t avail = pre_len + r;
+
+        if (!in_data) {
+            // Still inside headers: look for the end of the part headers.
+            buf[avail] = '\0';
+            char *hdr_end = strstr(buf, "\r\n\r\n");
+            if (!hdr_end) {
+                // Keep the tail in case the separator spans chunks.
+                pre_len = (avail > 3) ? 3 : avail;
+                memmove(buf, buf + avail - pre_len, pre_len);
+                continue;
+            }
+            // Boundary is on the first line, before the CRLF.
+            char *eol = strstr(buf, "\r\n");
+            if (eol) {
+                const char *bstart = (buf[0] == '-' && buf[1] == '-') ? buf + 2 : buf;
+                size_t blen = (size_t)(eol - bstart);
+                if (blen < sizeof(boundary)) { memcpy(boundary, bstart, blen); boundary[blen] = '\0'; }
+            }
+            in_data = true;
+            size_t header_bytes = (size_t)(hdr_end + 4 - buf);
+            size_t data_len = avail - header_bytes;
+            memmove(buf, buf + header_bytes, data_len);
+            avail = data_len;
+            if (!started) {
+                size_t total = (size_t)(header_bytes + data_len);
+                size_t file_len = (total <= req->content_len) ? 0 : 0; // size unknown until end
+                (void)file_len;
+                if (ota_upload_begin(req->content_len) != ESP_OK) { result = ESP_FAIL; break; }
+                started = true;
+            }
+        }
+
+        if (avail == 0) continue;
+
+        // Look for the closing boundary "\r\n--<boundary>".
+        char marker[96];
+        int mlen = snprintf(marker, sizeof(marker), "\r\n--%s", boundary);
+        char *bpos = NULL;
+        for (size_t i = 0; i + (size_t)mlen <= avail; i++) {
+            if (memcmp(buf + i, marker, mlen) == 0) { bpos = buf + i; break; }
+        }
+        size_t writable = bpos ? (size_t)(bpos - buf) : avail;
+
+        if (started && writable > 0) {
+            if (ota_upload_write(buf, writable) != ESP_OK) { result = ESP_FAIL; done = true; break; }
+        }
+        if (bpos) { done = true; break; }
+
+        // Keep the tail that could be the start of a boundary.
+        pre_len = (avail < (size_t)(mlen - 1)) ? avail : (size_t)(mlen - 1);
+        memmove(buf, buf + avail - pre_len, pre_len);
+    }
+
+    if (result == ESP_OK && started && done) {
+        result = ota_upload_end();
+        if (result == ESP_OK) {
+            render_ota_page(req, "Firmware installed successfully. Rebooting...", false);
+            free(buf);
+            ota_schedule_reboot();
+            return ESP_OK;
+        }
+    }
+    if (started && result != ESP_OK) ota_upload_abort();
+    free(buf);
+    render_ota_page(req, result == ESP_OK ? "Upload finished but no firmware data was found."
+                                          : "Update failed. The current firmware is unchanged.",
+                    result != ESP_OK);
+    return ESP_OK;
+}
+
+
 static void start_webserver(void) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     // Wildcard matching so the captive-portal catch-all ("/*") works, and a
@@ -2036,6 +2239,9 @@ static void start_webserver(void) {
         { .uri = "/phonebook",   .method = HTTP_GET,  .handler = phonebook_get_handler },
         { .uri = "/pb_add",      .method = HTTP_POST, .handler = pb_add_post_handler  },
         { .uri = "/pb_del",      .method = HTTP_POST, .handler = pb_del_post_handler  },
+        { .uri = "/firmware",    .method = HTTP_GET,  .handler = ota_get_handler       },
+        { .uri = "/ota_upload",  .method = HTTP_POST, .handler = ota_upload_post_handler },
+        { .uri = "/ota_url",     .method = HTTP_POST, .handler = ota_url_post_handler  },
         // Captive-portal catch-all: any other GET (e.g. /generate_204,
         // /hotspot-detect.html) ends up on the login page. Registered LAST so
         // the specific routes above take precedence.
