@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "author": "ESP32-SIP-Voice",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "board-esp32-devkit-c-v4",
+      "id": "esp",
+      "top": 0,
+      "left": 0,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-ili9341",
+      "id": "tft",
+      "top": -180,
+      "left": 320,
+      "attrs": { "rotation": "0" }
+    },
+    {
+      "type": "wokwi-xpt2046-touchscreen",
+      "id": "touch",
+      "top": 160,
+      "left": 330,
+      "attrs": {}
+    }
+  ],
+  "connections": [
+    [ "esp:3V3", "tft:VCC", "red", [] ],
+    [ "esp:3V3", "tft:LED", "red", [] ],
+    [ "esp:GND.1", "tft:GND", "black", [] ],
+    [ "esp:GPIO23", "tft:MOSI", "green", [] ],
+    [ "esp:GPIO18", "tft:SCK", "orange", [] ],
+    [ "esp:GPIO15", "tft:CS", "purple", [] ],
+    [ "esp:GPIO2", "tft:D/C", "gray", [] ],
+    [ "esp:GPIO4", "tft:RST", "brown", [] ],
+
+    [ "esp:3V3", "touch:VCC", "red", [] ],
+    [ "esp:GND.2", "touch:GND", "black", [] ],
+    [ "esp:GPIO23", "touch:MOSI", "green", [] ],
+    [ "esp:GPIO19", "touch:MISO", "blue", [] ],
+    [ "esp:GPIO18", "touch:SCK", "orange", [] ],
+    [ "esp:GPIO14", "touch:CS", "yellow", [] ],
+    [ "esp:GPIO27", "touch:IRQ", "pink", [] ]
+  ],
+  "dependencies": {}
+}

@@ -22,6 +22,56 @@
 #define WIFI_PASSWORD          "your_wifi_password"
 #define WIFI_MAX_RETRY         5
 
+// Minimum Wi-Fi auth mode the STA will associate with. The production default
+// (WPA2) is overridden to WIFI_AUTH_OPEN by the Wokwi simulation build, because
+// the simulator's virtual AP "Wokwi-GUEST" is an open network.
+#ifndef WIFI_MIN_AUTHMODE
+#define WIFI_MIN_AUTHMODE      WIFI_AUTH_WPA2_PSK
+#endif
+
+// =====================================================================
+//  Network interface selection (runtime setting, stored in NVS, set on the
+//  web Hardware -> Network tab).
+//    AUTO      prefer wired Ethernet when a link is present, else Wi-Fi.
+//    WIFI      Wi-Fi only (the ENC28J60 path is not started).
+//    ETHERNET  wired only; the Wi-Fi station is never started.
+// =====================================================================
+#define NETWORK_MODE_AUTO      0
+#define NETWORK_MODE_WIFI      1
+#define NETWORK_MODE_ETHERNET  2
+#define NETWORK_MODE_DEFAULT   NETWORK_MODE_AUTO
+
+// =====================================================================
+//  ENC28J60 SPI Ethernet (optional; CONFIG_SIP_ETH_ENC28J60).
+//  Every pin defaults to -1 = "not wired": set them on the web
+//  Hardware -> Network tab (like the other peripherals). INT is mandatory
+//  because the driver is interrupt-driven; RST may be tied to VCC (-1).
+//  SCK/MOSI/MISO use a dedicated SPI bus (SPI3 on ESP32/S3, SPI2 on C3).
+// =====================================================================
+#define ETH_PIN_CS     (-1)
+#define ETH_PIN_INT    (-1)
+#define ETH_PIN_RST    (-1)
+#define ETH_PIN_SCK    (-1)
+#define ETH_PIN_MISO   (-1)
+#define ETH_PIN_MOSI   (-1)
+
+#if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(__esp32c3__)
+  #define ETH_SPI_HOST SPI2_HOST
+#else
+  #define ETH_SPI_HOST SPI3_HOST
+#endif
+
+#ifndef ETH_SPI_CLOCK_MHZ
+#  if defined(CONFIG_SIP_ETH_SPI_CLOCK_MHZ)
+#    define ETH_SPI_CLOCK_MHZ  CONFIG_SIP_ETH_SPI_CLOCK_MHZ
+#  else
+#    define ETH_SPI_CLOCK_MHZ  10
+#  endif
+#endif
+
+// DHCP hostname advertised over Ethernet when none is configured.
+#define ETH_HOSTNAME_DEFAULT   "esp32-sip"
+
 // --- SIP Configuration ---
 #define SIP_SERVER_IP          "192.168.1.100"
 #define SIP_SERVER_PORT        5060
@@ -125,13 +175,15 @@
   #define KEYPAD_C4 17
   #define KEYPAD_I2C_SDA 9
   #define KEYPAD_I2C_SCL 8
-  #define TFT_MOSI 35
-  #define TFT_SCLK 36
-  #define TFT_CS   37
-  #define TFT_DC   38
-  #define TFT_RST  39
-  #define TOUCH_CS  40
-  #define TOUCH_IRQ 41
+  // On modules with Octal PSRAM (ESP32-S3-WROOM-1-N16R8 etc.) GPIO33-37 are
+  // reserved for the PSRAM, so the display/touch defaults avoid them.
+  #define TFT_MOSI 47
+  #define TFT_SCLK 48
+  #define TFT_CS   21
+  #define TFT_DC   40
+  #define TFT_RST  41
+  #define TOUCH_CS  18
+  #define TOUCH_IRQ 38
 #elif defined(CONFIG_IDF_TARGET_ESP32C3) || defined(__esp32c3__)
   #define I2S_BCK_PIN        4
   #define I2S_WS_PIN         5
@@ -181,6 +233,85 @@
   #define TOUCH_CS  14
   #define TOUCH_IRQ 27
 #endif
+
+// Optional SPI MISO for panels/touch controllers that drive it. The XPT2046
+// touch controller needs MISO to return coordinates; most TFT panels do not.
+// -1 = not wired (the Web "Hardware" page can override this at runtime).
+#ifndef TFT_MISO
+#define TFT_MISO (-1)
+#endif
+
+// =====================================================================
+//  LED matrix display default pins (see docs/FEATURE-PLAN.md).
+//  Compile-time fallbacks; the Web "Hardware -> Matrix" page overrides these
+//  in NVS. HUB75 uses 13-14 pins; the S3 defaults re-use the (currently unused)
+//  matrix-keypad GPIOs and free pins, avoiding I2S/I2C/TFT/USB/flash/strapping.
+// =====================================================================
+#if defined(CONFIG_IDF_TARGET_ESP32S3) || defined(__esp32s3__)
+  #define MX_HUB75_R1   10
+  #define MX_HUB75_G1   11
+  #define MX_HUB75_B1   12
+  #define MX_HUB75_R2   13
+  #define MX_HUB75_G2   14
+  #define MX_HUB75_B2   15
+  #define MX_HUB75_A    16
+  #define MX_HUB75_B    17
+  #define MX_HUB75_C    18
+  #define MX_HUB75_D    21
+  #define MX_HUB75_E    (-1)   // 1/16 scan needs no E line
+  #define MX_HUB75_CLK  1
+  #define MX_HUB75_LAT  2
+  #define MX_HUB75_OE   42
+  #define MX_MAX7219_DIN  10
+  #define MX_MAX7219_CLK  11
+  #define MX_MAX7219_CS   12
+#else
+  // Classic ESP32 / C3: no default HUB75 map (pins are tight and HUB75 shares
+  // the I2S peripheral); configure at runtime or use the MAX7219 ticker.
+  #define MX_HUB75_R1   (-1)
+  #define MX_HUB75_G1   (-1)
+  #define MX_HUB75_B1   (-1)
+  #define MX_HUB75_R2   (-1)
+  #define MX_HUB75_G2   (-1)
+  #define MX_HUB75_B2   (-1)
+  #define MX_HUB75_A    (-1)
+  #define MX_HUB75_B    (-1)
+  #define MX_HUB75_C    (-1)
+  #define MX_HUB75_D    (-1)
+  #define MX_HUB75_E    (-1)
+  #define MX_HUB75_CLK  (-1)
+  #define MX_HUB75_LAT  (-1)
+  #define MX_HUB75_OE   (-1)
+  #define MX_MAX7219_DIN  32
+  #define MX_MAX7219_CLK  33
+  #define MX_MAX7219_CS   27
+#endif
+
+// =====================================================================
+//  Matrix display runtime defaults (stored in NVS, set from the web UI).
+// =====================================================================
+#define DISPLAY_MODE_OFF        0   // matrix disabled
+#define DISPLAY_MODE_CALLER_ID  1   // show caller / room on call
+#define DISPLAY_MODE_QUEUE      2   // show queue count
+#define DISPLAY_MODE_ALERT      3   // alert + room until acknowledged
+#define DISPLAY_MODE_ALL        4   // caller + queue + alert
+
+#define MATRIX_TYPE_NONE     0
+#define MATRIX_TYPE_HUB75    1
+#define MATRIX_TYPE_MAX7219  2
+#define MATRIX_TYPE_PREVIEW  3
+
+#define MATRIX_COLOR_MONO_R  0
+#define MATRIX_COLOR_MONO_G  1
+#define MATRIX_COLOR_MONO_B  2
+#define MATRIX_COLOR_RGB     3
+
+#define MATRIX_LAYOUT_2D     0
+#define MATRIX_LAYOUT_LINE   1
+
+#define DISPLAY_MODE_DEFAULT    DISPLAY_MODE_CALLER_ID
+#define MATRIX_BRIGHTNESS_DEFAULT 60
+#define MATRIX_MODULES_DEFAULT    8
 
 // --- Task configuration ---
 #define WIFI_TASK_PRIORITY      5
@@ -254,6 +385,33 @@
 #endif
 #ifndef IP_ACQUIRED_BIT
 #define IP_ACQUIRED_BIT     (1 << 2)
+#endif
+
+// =====================================================================
+//  Wokwi simulation build overrides (CONFIG_SIP_WOKWI_SIM)
+//  Enabled only by sdkconfig.wokwi.defaults; normal builds are untouched.
+//  Wokwi emulates an ILI9341 panel + XPT2046 touch on an open Wokwi-GUEST
+//  network, so those defaults are swapped here.
+// =====================================================================
+#if defined(CONFIG_SIP_WOKWI_SIM)
+#undef  WIFI_SSID
+#undef  WIFI_PASSWORD
+#undef  WIFI_MIN_AUTHMODE
+#define WIFI_SSID              "Wokwi-GUEST"
+#define WIFI_PASSWORD          ""
+#define WIFI_MIN_AUTHMODE      WIFI_AUTH_OPEN
+#undef  WIFI_MAX_RETRY
+#define WIFI_MAX_RETRY         10
+
+#undef  USE_DISPLAY_ST7789
+#undef  USE_DISPLAY_ILI9341
+#undef  USE_DISPLAY_GC9A01
+#define USE_DISPLAY_ILI9341    1
+
+// XPT2046 MISO (GPIO19 is free on the classic ESP32 default map because the
+// I2C codec bus is unused there).
+#undef  TFT_MISO
+#define TFT_MISO               19
 #endif
 
 #endif // APP_CONFIG_H

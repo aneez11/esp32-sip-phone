@@ -74,10 +74,14 @@ void display_tft_init(void)
   int dc = hw.pin_tft_dc != -1 ? hw.pin_tft_dc : TFT_DC;
   int rst = hw.pin_tft_rst != -1 ? hw.pin_tft_rst : TFT_RST;
 
+  // MISO is optional: some touch controllers (XPT2046) need it, most TFT
+  // panels do not. Prefer the runtime setting, then the board default.
+  int miso = hw.pin_spi_miso != -1 ? hw.pin_spi_miso : TFT_MISO;
+
   spi_bus_config_t buscfg = {
       .sclk_io_num = clk,
       .mosi_io_num = mosi,
-      .miso_io_num = -1,
+      .miso_io_num = miso,
       .quadwp_io_num = -1,
       .quadhd_io_num = -1,
       .max_transfer_sz = TFT_H_RES * 80 * sizeof(uint16_t) + 8,

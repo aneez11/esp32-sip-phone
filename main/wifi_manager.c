@@ -155,7 +155,9 @@ void wifi_init_sta(EventGroupHandle_t wifi_event_group, const EventBits_t connec
 
     wifi_config_t wifi_config = {
         .sta = {
-            .threshold.authmode = WIFI_AUTH_WPA2_PSK,
+            // WPA2 by default; the Wokwi simulation overlay lowers this to
+            // WIFI_AUTH_OPEN so the device can join the open Wokwi-GUEST AP.
+            .threshold.authmode = WIFI_MIN_AUTHMODE,
             .pmf_cfg = { .capable = true, .required = false },
         },
     };

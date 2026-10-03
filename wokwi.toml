@@ -1,0 +1,34 @@
+# Wokwi for VS Code project configuration.
+#
+# Build the simulation firmware first (see wokwi/README.md):
+#   ./wokwi/build.ps1      (Windows)
+#   ./wokwi/build.sh       (Linux / macOS)
+#
+# Then press F1 -> "Wokwi: Start Simulator".
+#
+# The firmware is built for the ESP32 (classic), matching board-esp32-devkit-c-v4
+# in diagram.json.
+
+[wokwi]
+version = 1
+firmware = 'build_wokwi/flasher_args.json'
+elf = 'build_wokwi/esp32_sip_voice.elf'
+gdbServerPort = 3333
+
+# Serial (UART0) forwarding. While the simulation runs, connect an external
+# terminal to rfc2217://localhost:4000 (115200 baud) — e.g. the VS Code
+# "Serial Monitor" extension in TCP mode, PuTTY in Telnet mode, or:
+#   python -c "import serial; s=serial.serial_for_url('rfc2217://localhost:4000',baudrate=115200); [print(s.readline().decode(errors='replace'),end='') for _ in iter(int,1)]"
+rfc2217ServerPort = 4000
+
+# Optional: expose the device web UI on the host.
+# Requires the Wokwi IoT gateway (private gateway recommended for local access).
+# Open http://localhost:8080 once the device has an IP on Wokwi-GUEST.
+[[net.forward]]
+from = "localhost:8080"
+to = "target:80"
+
+# To route simulator traffic through the local Wokwi IoT gateway instead of the
+# shared public one, uncomment (run `wokwigw` first):
+# [net]
+# gateway = "ws://localhost:9011"

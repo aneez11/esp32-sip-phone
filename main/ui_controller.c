@@ -3,6 +3,8 @@
 #include "codec_driver.h"
 #include "config_manager.h"
 #include "wifi_manager.h"
+#include "net_manager.h"
+#include "esp_netif.h"
 #include "phonebook.h"
 #include "esp_log.h"
 #include "esp_system.h"
@@ -536,7 +538,7 @@ static void field_num(page_t *p, const char *name, const char *label, int value,
 static void pg_device_footer(page_t *p) {
     esp_ip4_addr_t ip = {0};
     char ip_str[16] = "0.0.0.0";
-    if (get_my_ip(&ip) == ESP_OK) snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ip));
+    if (net_get_ip(&ip) == ESP_OK) snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ip));
     pg_puts(p, "<div class='foot'>ESP32 SIP Voice " APP_VERSION " &middot; ");
     pg_printf(p, "%s", ip_str);
     pg_puts(p, " &middot; ");
@@ -970,7 +972,7 @@ static esp_err_t index_get_handler(httpd_req_t *req) {
     bool registered = (bits & SIP_REGISTERED_BIT) != 0;
 
     esp_ip4_addr_t ip = {0};
-    get_my_ip(&ip);
+    net_get_ip(&ip);
     char ip_str[16] = "0.0.0.0";
     snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ip));
 
@@ -1079,7 +1081,39 @@ static esp_err_t index_get_handler(httpd_req_t *req) {
 #else
     pg_puts(&p, "<span class='pill'>Wake word off</span>");
 #endif
-    pg_puts(&p, "</div></div></div>"); // .card, .col-12, .grid
+    pg_puts(&p, "</div></div>"); // .card, .col-12 (Device)
+
+    // --- Network mode (prominent quick switch; restart to apply) ---
+    if (g_settings) {
+        static const struct { int m; const char *label; } net_choices[3] = {
+            { NETWORK_MODE_AUTO, "Auto" },
+            { NETWORK_MODE_WIFI, "Wi-Fi" },
+#if defined(CONFIG_SIP_ETH_ENC28J60)
+            { NETWORK_MODE_ETHERNET, "Ethernet" },
+#else
+            { -1, NULL },
+#endif
+        };
+        pg_puts(&p, "<div class='col-12'><div class='card'>"
+                    "<div class='card-title'>Network Mode</div>"
+                    "<p class='hint' style='margin:0 0 12px'>Which interface the phone uses. "
+                    "Changing it restarts the device.</p><div class='actions'>");
+        for (int i = 0; i < 3; i++) {
+            if (net_choices[i].m < 0) continue;
+            bool active = (g_settings->network_mode == net_choices[i].m);
+            pg_printf(&p, "<form method='POST' action='/netmode'>"
+                          "<input type='hidden' name='mode' value='%d'>"
+                          "<button class='btn%s' type='submit'%s>%s</button></form>",
+                      net_choices[i].m, active ? " primary" : "",
+                      active ? " disabled" : "", net_choices[i].label);
+        }
+        pg_puts(&p, "</div><p class='hint' style='margin:10px 0 0'>"
+                    "<b>Auto</b> uses Ethernet when a cable is plugged in, otherwise Wi-Fi. "
+                    "Static addressing and ENC28J60 pins are on <a class='link' "
+                    "href='/hardware?tab=network'>Hardware &rarr; Network</a>.</p>"
+                    "</div></div>");
+    }
+    pg_puts(&p, "</div>"); // .grid
 
     pg_device_footer(&p);
     pg_foot(&p);
@@ -1591,9 +1625,16 @@ static esp_err_t hardware_get_handler(httpd_req_t *req) {
                 "<p class='sub'>GPIO wiring for this board. Every value is a GPIO number; use "
                 "<b>-1</b> for anything that is not wired. Saving restarts the device.</p>");
 
-    // One peripheral group per tab.
+    // One peripheral group per tab. The Network tab only exists when the
+    // ENC28J60 driver is compiled in, so a Wi-Fi-only build cannot be
+    // configured into "Ethernet only" (which would strand it).
+#if defined(CONFIG_SIP_ETH_ENC28J60)
+    static const char *hw_ids[] = { "audio", "i2c", "display", "touch", "network", "theme" };
+    static const char *hw_labels[] = { "I2S Audio", "I2C Control", "Display (SPI)", "Touch", "Network", "Theme" };
+#else
     static const char *hw_ids[] = { "audio", "i2c", "display", "touch", "theme" };
     static const char *hw_labels[] = { "I2S Audio", "I2C Control", "Display (SPI)", "Touch", "Theme" };
+#endif
     char tab[16];
     tab_value(req, tab, sizeof(tab));
     bool valid = false;
@@ -1667,6 +1708,49 @@ static esp_err_t hardware_get_handler(httpd_req_t *req) {
     pg_puts(&p, "</div></div>");
     } // tab: touch
 
+#if defined(CONFIG_SIP_ETH_ENC28J60)
+    if (strcmp(tab, "network") == 0) {
+    static const char *net_modes[] = {
+        "Auto - prefer Ethernet, fall back to Wi-Fi",
+        "Wi-Fi only",
+        "Ethernet only (no Wi-Fi station)",
+    };
+    static const char *dhcp_modes[] = { "Static IP", "DHCP (automatic)" };
+    pg_puts(&p, "<div class='card col-12'><div class='card-title'>Network interface</div>"
+                "<p class='hint' style='margin:0 0 12px'>How this phone reaches the LAN. "
+                "Changing this restarts the device.</p><div class='fields'>");
+    field_select(&p, "net_mode", "Interface", net_modes, 3, g_settings->network_mode,
+                 "<b>Auto</b> uses the ENC28J60 when a cable is plugged in and otherwise Wi-Fi. "
+                 "<b>Wi-Fi only</b> ignores the wired module. <b>Ethernet only</b> never starts "
+                 "the Wi-Fi station (use with a fixed address).");
+    field_select(&p, "eth_dhcp", "Addressing", dhcp_modes, 2, g_settings->eth_dhcp,
+                 "DHCP asks the router for an address. Static uses the four fields below "
+                 "(Ethernet only; ignored on DHCP).");
+    field_text(&p, "eth_ip",   "Static IP", g_settings->eth_ip,      "192.168.1.50",   "text", 15, NULL);
+    field_text(&p, "eth_mask", "Netmask",   g_settings->eth_netmask, "255.255.255.0",  "text", 15, NULL);
+    field_text(&p, "eth_gw",   "Gateway",   g_settings->eth_gw,      "192.168.1.1",    "text", 15, NULL);
+    field_text(&p, "eth_dns",  "DNS server", g_settings->eth_dns,    "192.168.1.1",    "text", 15, NULL);
+    field_text(&p, "eth_host", "Hostname",  g_settings->eth_hostname, ETH_HOSTNAME_DEFAULT, "text", 31,
+               "Name advertised to the router (DHCP only).");
+    pg_puts(&p, "</div></div>");
+
+    pg_puts(&p, "<div class='card col-12'><div class='card-title'>ENC28J60 pins</div>"
+                "<p class='hint' style='margin:0 0 12px'>Wiring of the ENC28J60 SPI Ethernet "
+                "module. INT is required because the driver is interrupt-driven; RST may be -1 "
+                "if the module's reset is tied to VCC. SCK/MOSI/MISO sit on a dedicated SPI bus, "
+                "so leave them -1 when using Wi-Fi only.</p><div class='fields pins'>");
+    hw_pin_field(&p, "eth_cs",   "Chip select (CS)", hw.pin_eth_cs, NULL);
+    hw_pin_field(&p, "eth_int",  "Interrupt (INT)", hw.pin_eth_int,
+                 "Required. Use an input-capable GPIO.");
+    hw_pin_field(&p, "eth_rst",  "Reset (RST)", hw.pin_eth_rst,
+                 "-1 when the module reset is tied to VCC.");
+    hw_pin_field(&p, "eth_sck",  "SPI clock (SCK)", hw.pin_eth_sck, NULL);
+    hw_pin_field(&p, "eth_miso", "SPI MISO", hw.pin_eth_miso, NULL);
+    hw_pin_field(&p, "eth_mosi", "SPI MOSI", hw.pin_eth_mosi, NULL);
+    pg_puts(&p, "</div></div>");
+    } // tab: network
+#endif
+
     if (strcmp(tab, "theme") == 0) {
     pg_puts(&p, "<div class='card col-12'><div class='card-title'>Display theme</div>"
                 "<p class='hint' style='margin:0 0 12px'>Look of the on-device screen. The theme "
@@ -1725,6 +1809,12 @@ static esp_err_t hardware_post_handler(httpd_req_t *req) {
         { "tft_rst",   &hw.pin_tft_rst   },
         { "touch_cs",  &hw.pin_touch_cs  },
         { "touch_irq", &hw.pin_touch_irq },
+        { "eth_cs",    &hw.pin_eth_cs    },
+        { "eth_int",   &hw.pin_eth_int   },
+        { "eth_rst",   &hw.pin_eth_rst   },
+        { "eth_sck",   &hw.pin_eth_sck   },
+        { "eth_miso",  &hw.pin_eth_miso  },
+        { "eth_mosi",  &hw.pin_eth_mosi  },
     };
     // A cleared field must mean "leave it alone" - never atoi("") == pin 0,
     // which would land on a strapping pin.
@@ -1743,6 +1833,71 @@ static esp_err_t hardware_post_handler(httpd_req_t *req) {
             hw.ui_theme = (uint8_t)t;
             changed = true;
         }
+    }
+
+    // Network interface + Ethernet addressing live in the app settings (not the
+    // hardware blob), so they are saved separately. A restart applies them.
+    bool net_invalid = false;
+    if (g_settings) {
+        bool net_changed = false;
+        bool net_too_long = false;
+        app_settings_t updated = *g_settings;
+        if (form_get(buf, "net_mode", v, sizeof(v)) && v[0]) {
+            int m = atoi(v);
+            if (m >= NETWORK_MODE_AUTO && m <= NETWORK_MODE_ETHERNET &&
+                (uint8_t)m != updated.network_mode) {
+                updated.network_mode = (uint8_t)m;
+                net_changed = true;
+            }
+        }
+        if (form_get(buf, "eth_dhcp", v, sizeof(v)) && v[0]) {
+            int d = atoi(v);
+            if (d >= 0 && d <= 1 && (uint8_t)d != updated.eth_dhcp) {
+                updated.eth_dhcp = (uint8_t)d;
+                net_changed = true;
+            }
+        }
+        apply_field(buf, "eth_ip",   updated.eth_ip,       sizeof(updated.eth_ip),       true, &net_changed, &net_too_long);
+        apply_field(buf, "eth_mask", updated.eth_netmask,  sizeof(updated.eth_netmask),  true, &net_changed, &net_too_long);
+        apply_field(buf, "eth_gw",   updated.eth_gw,       sizeof(updated.eth_gw),       true, &net_changed, &net_too_long);
+        apply_field(buf, "eth_dns",  updated.eth_dns,      sizeof(updated.eth_dns),      true, &net_changed, &net_too_long);
+        apply_field(buf, "eth_host", updated.eth_hostname, sizeof(updated.eth_hostname), true, &net_changed, &net_too_long);
+        // Static addressing must be a usable IPv4 configuration: a malformed
+        // value would otherwise be applied as 0.0.0.0 with DHCP already stopped.
+#if defined(CONFIG_SIP_ETH_ENC28J60)
+        if (updated.eth_dhcp == 0) {
+            if (updated.eth_ip[0] == '\0' || esp_ip4addr_aton(updated.eth_ip) == 0 ||
+                updated.eth_netmask[0] == '\0' || esp_ip4addr_aton(updated.eth_netmask) == 0 ||
+                (updated.eth_gw[0] && esp_ip4addr_aton(updated.eth_gw) == 0) ||
+                (updated.eth_dns[0] && esp_ip4addr_aton(updated.eth_dns) == 0)) {
+                net_invalid = true;
+            }
+        }
+        if (net_too_long) net_invalid = true;
+#endif
+        if (net_changed && !net_invalid) {
+            *g_settings = updated;
+            config_manager_save(g_settings);
+            changed = true;
+        }
+    }
+
+    if (net_invalid) {
+        free(buf);
+        page_t ep;
+        pg_init(&ep, PAGE_MIN_CAP);
+        pg_head(&ep, "Hardware - ESP32 SIP", 0);
+        pg_nav(&ep, "hardware");
+        pg_puts(&ep, "<div class='card'><h1>Invalid network settings</h1>"
+                     "<p class='sub'>Static addressing needs a valid IPv4 address and netmask, "
+                     "and any gateway/DNS value you enter must be valid too, all in dotted-quad "
+                     "form such as 192.168.1.50. Nothing was saved. Choose <b>DHCP</b> to get an "
+                     "address automatically.</p>"
+                     "<a class='link' href='/hardware?tab=network'>&laquo; Back to network</a></div>");
+        pg_device_footer(&ep);
+        pg_foot(&ep);
+        send_page(req, &ep);
+        return ESP_OK;
     }
 
     config_manager_save_hw(&hw);
@@ -1781,6 +1936,71 @@ static esp_err_t hardware_post_handler(httpd_req_t *req) {
 //  HTTP server
 // =====================================================================
 
+// Quick network-interface switch from the status page. Persists the choice and
+// restarts so the new interface is brought up cleanly.
+static esp_err_t netmode_post_handler(httpd_req_t *req) {
+    if (!require_login(req)) return ESP_OK;
+    if (req->content_len <= 0 || req->content_len > 128) return ESP_FAIL;
+    if (!g_settings) return ESP_FAIL;
+
+    char buf[160];
+    int ret = httpd_req_recv(req, buf, req->content_len);
+    if (ret <= 0) return ESP_FAIL;
+    buf[ret] = '\0';
+
+    char v[8];
+    int chosen = -1;
+    if (form_get(buf, "mode", v, sizeof(v)) && v[0]) {
+        int m = atoi(v);
+        if (m >= NETWORK_MODE_AUTO && m <= NETWORK_MODE_ETHERNET) chosen = m;
+    }
+
+    bool eth_available = false;
+#if defined(CONFIG_SIP_ETH_ENC28J60)
+    eth_available = true;
+#endif
+
+    page_t p;
+    pg_init(&p, PAGE_MIN_CAP);
+    pg_head(&p, "Network - ESP32 SIP", 0);
+    pg_nav(&p, "call");
+
+    if (chosen < 0 || (chosen == NETWORK_MODE_ETHERNET && !eth_available)) {
+        pg_puts(&p, "<div class='card'><h1>Unsupported mode</h1>"
+                    "<p class='sub'>That network mode is not available in this firmware. "
+                    "Ethernet requires the ENC28J60 option to be enabled at build time.</p>"
+                    "<a class='link' href='/'>&laquo; Back to status</a></div>");
+        pg_device_footer(&p);
+        pg_foot(&p);
+        send_page(req, &p);
+        return ESP_OK;
+    }
+
+    if ((uint8_t)chosen == g_settings->network_mode) {
+        pg_puts(&p, "<div class='card'><h1>No change</h1>"
+                    "<p class='sub'>The device is already using that network mode.</p>"
+                    "<a class='link' href='/'>&laquo; Back to status</a></div>");
+        pg_device_footer(&p);
+        pg_foot(&p);
+        send_page(req, &p);
+        return ESP_OK;
+    }
+
+    g_settings->network_mode = (uint8_t)chosen;
+    config_manager_save(g_settings);
+    ESP_LOGI(TAG, "Network mode changed to %d; restarting", chosen);
+
+    pg_puts(&p, "<div class='card'><h1>Network mode saved</h1>"
+                "<p class='sub'>The device is restarting to bring up the new interface. "
+                "Reconnect to it on its new address once it is back.</p>"
+                "<div class='ok'>Rebooting...</div></div>");
+    pg_foot(&p);
+    send_page(req, &p);
+    vTaskDelay(pdMS_TO_TICKS(1500));
+    esp_restart();
+    return ESP_OK;
+}
+
 static httpd_handle_t server = NULL;
 
 static void start_webserver(void) {
@@ -1809,6 +2029,7 @@ static void start_webserver(void) {
         { .uri = "/hardware",    .method = HTTP_GET,  .handler = hardware_get_handler },
         { .uri = "/hardware",    .method = HTTP_POST, .handler = hardware_post_handler },
         { .uri = "/volume",      .method = HTTP_POST, .handler = volume_post_handler  },
+        { .uri = "/netmode",     .method = HTTP_POST, .handler = netmode_post_handler },
         { .uri = "/call",        .method = HTTP_POST, .handler = action_post_handler  },
         { .uri = "/answer",      .method = HTTP_POST, .handler = action_post_handler  },
         { .uri = "/hangup",      .method = HTTP_POST, .handler = action_post_handler  },

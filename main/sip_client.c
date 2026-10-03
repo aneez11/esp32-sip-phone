@@ -13,7 +13,7 @@
 #include "lwip/sockets.h"
 #include "lwip/dns.h"
 #include "freertos/timers.h"
-#include "wifi_manager.h" // get_my_ip()
+#include "net_manager.h" // net_get_ip()
 #include <inttypes.h>
 
 static const char *TAG = "SIP_CLIENT";
@@ -648,7 +648,7 @@ static void sip_task(void *pvParameters)
     xEventGroupWaitBits(client->event_group, IP_ACQUIRED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
     esp_ip4_addr_t my_ip;
-    if (get_my_ip(&my_ip) != ESP_OK)
+    if (net_get_ip(&my_ip) != ESP_OK)
     {
         ESP_LOGE(TAG, "No local IP; SIP task exiting.");
         vTaskDelete(NULL);

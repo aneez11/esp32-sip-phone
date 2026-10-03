@@ -25,3 +25,7 @@ simulator/build_*/
 *.swp
 *.swo
 .DS_Store
+
+# Local AI tooling (tools/esp-mcp)
+.venv/
+mcp-*.log

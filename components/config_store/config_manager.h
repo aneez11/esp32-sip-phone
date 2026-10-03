@@ -25,6 +25,25 @@ typedef struct {
     char sip_target[64];             // default call target; empty -> SIP_TARGET_URI
     char web_user[32];               // web login username
     char web_password[64];           // web login password
+
+    // Network interface: Wi-Fi / Ethernet selection and static IPv4 (ETH).
+    uint8_t network_mode;            // NETWORK_MODE_*
+    uint8_t eth_dhcp;                // 1 = DHCP, 0 = use the static address below
+    char eth_ip[16];                 // static IPv4 address
+    char eth_netmask[16];            // static netmask
+    char eth_gw[16];                 // static gateway
+    char eth_dns[16];                // static DNS server
+    char eth_hostname[32];           // DHCP hostname
+
+    // LED matrix display (caller ID / queue / alert). Values from app_config.h.
+    uint8_t display_mode;            // DISPLAY_MODE_*
+    uint8_t matrix_type;             // MATRIX_TYPE_*
+    uint8_t matrix_channels;         // MATRIX_COLOR_*
+    uint8_t matrix_layout;           // MATRIX_LAYOUT_*
+    uint8_t matrix_brightness;       // 0-100
+    uint8_t matrix_modules;          // MAX7219 chain length
+    uint16_t matrix_width;           // panel width (HUB75/preview)
+    uint16_t matrix_height;          // panel height
 } app_settings_t;
 
 typedef struct {
@@ -49,6 +68,34 @@ typedef struct {
     int8_t pin_touch_cs;
     int8_t pin_touch_irq;
     
+    // LED matrix — HUB75 (13 used, E optional)
+    int8_t pin_mx_r1;
+    int8_t pin_mx_g1;
+    int8_t pin_mx_b1;
+    int8_t pin_mx_r2;
+    int8_t pin_mx_g2;
+    int8_t pin_mx_b2;
+    int8_t pin_mx_a;
+    int8_t pin_mx_b;
+    int8_t pin_mx_c;
+    int8_t pin_mx_d;
+    int8_t pin_mx_e;
+    int8_t pin_mx_clk;
+    int8_t pin_mx_lat;
+    int8_t pin_mx_oe;
+    // LED matrix — MAX7219 8x8 chain
+    int8_t pin_mx_din;
+    int8_t pin_mx_mclk;
+    int8_t pin_mx_cs;
+
+    // ENC28J60 SPI Ethernet (-1 = not wired). INT is required.
+    int8_t pin_eth_cs;
+    int8_t pin_eth_int;
+    int8_t pin_eth_rst;
+    int8_t pin_eth_sck;
+    int8_t pin_eth_miso;
+    int8_t pin_eth_mosi;
+
     // UI Settings
     uint8_t ui_theme; // 0=Voice Assistant, 1=Mobile OS, 2=Smart Speaker
 } hardware_settings_t;

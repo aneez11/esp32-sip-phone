@@ -10,8 +10,10 @@
 #include "nvs_flash.h"
 #include <time.h>
 #include <stdlib.h>
+#include <stdbool.h>
+#include <string.h>
 
-#include "wifi_manager.h"
+#include "net_manager.h"
 #include "sip_client.h"
 #include "audio_pipeline.h"
 #include "app_config.h" // Include configurations
@@ -23,6 +25,8 @@
 #include "display_tft.h"
 #include "touch_driver.h"
 #include "ui_lvgl.h"
+#include "matrix_display.h"
+#include "driver/gpio.h"
 
 static const char *TAG = "MAIN";
 
@@ -34,7 +38,51 @@ EventGroupHandle_t app_event_group;
 // Shared handles (if needed across modules, though better passed as params)
 sip_client_handle_t g_sip_client = NULL;
 audio_pipeline_handle_t g_audio_pipeline = NULL;
+matrix_display_handle_t g_matrix_display = NULL;
 app_settings_t g_app_settings;
+
+// Build a matrix config from the stored settings (NVS) + compile-time default
+// pins. Returns false when the matrix is disabled (DISPLAY_MODE_OFF / no type).
+static bool build_matrix_cfg(matrix_cfg_t *out) {
+    if (!out || g_app_settings.display_mode == DISPLAY_MODE_OFF ||
+        g_app_settings.matrix_type == MATRIX_TYPE_NONE) {
+        return false;
+    }
+    hardware_settings_t hw;
+    config_manager_load_hw(&hw);
+
+    *out = (matrix_cfg_t){0};
+    out->color = (matrix_color_t)g_app_settings.matrix_channels;
+    out->brightness = g_app_settings.matrix_brightness;
+    out->modules = g_app_settings.matrix_modules ? g_app_settings.matrix_modules : MATRIX_MODULES_DEFAULT;
+
+    if (g_app_settings.matrix_type == MATRIX_TYPE_HUB75) {
+        out->type = MX_HUB75;
+        out->layout = MX_LAYOUT_2D;
+        out->width = g_app_settings.matrix_width ? g_app_settings.matrix_width : 64;
+        out->height = g_app_settings.matrix_height ? g_app_settings.matrix_height : 32;
+        const int8_t pins[14] = {
+            hw.pin_mx_r1, hw.pin_mx_g1, hw.pin_mx_b1, hw.pin_mx_r2, hw.pin_mx_g2,
+            hw.pin_mx_b2, hw.pin_mx_a, hw.pin_mx_b, hw.pin_mx_c, hw.pin_mx_d,
+            hw.pin_mx_e, hw.pin_mx_clk, hw.pin_mx_lat, hw.pin_mx_oe,
+        };
+        memcpy(out->pins, pins, sizeof(pins));
+    } else if (g_app_settings.matrix_type == MATRIX_TYPE_MAX7219) {
+        out->type = MX_MAX7219;
+        out->layout = MX_LAYOUT_LINE;
+        out->width = (uint16_t)(8 * out->modules);
+        out->height = 8;
+        out->pins[0] = hw.pin_mx_din;
+        out->pins[1] = hw.pin_mx_mclk;
+        out->pins[2] = hw.pin_mx_cs;
+    } else { // MATRIX_TYPE_PREVIEW
+        out->type = MX_PREVIEW;
+        out->layout = MX_LAYOUT_2D;
+        out->width = g_app_settings.matrix_width ? g_app_settings.matrix_width : 64;
+        out->height = g_app_settings.matrix_height ? g_app_settings.matrix_height : 32;
+    }
+    return true;
+}
 
 // --- Application State Machine (Simplified Example) ---
 typedef enum {
@@ -108,11 +156,53 @@ static void init_sntp(void) {
     ESP_LOGI(TAG, "SNTP started (%s, TZ=%s)", NTP_SERVER, TIMEZONE);
 }
 
+// =====================================================================
+//  Factory reset via the control button
+//  Hold the control button (BUTTON_GPIO, active low) during boot to wipe
+//  every stored setting back to the compile-time defaults: Wi-Fi, SIP
+//  account, web login, network mode, GPIO map, matrix pins and theme.
+//  A short tap does not reset, so the same button keeps working as the
+//  call button at runtime.
+// =====================================================================
+#define FACTORY_RESET_HOLD_MS 3000
+
+static bool factory_reset_requested(void) {
+    gpio_config_t io = {
+        .pin_bit_mask = (1ULL << BUTTON_GPIO),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&io);
+
+    if (gpio_get_level(BUTTON_GPIO) != 0) return false; // not pressed
+
+    ESP_LOGW(TAG, "Button held at boot; keep holding %d s to factory reset...",
+             FACTORY_RESET_HOLD_MS / 1000);
+    for (int waited = 0; waited < FACTORY_RESET_HOLD_MS; waited += 100) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        if (gpio_get_level(BUTTON_GPIO) != 0) {
+            ESP_LOGI(TAG, "Button released early; normal boot");
+            return false;
+        }
+    }
+    return true;
+}
+
 void app_main(void) {
     ESP_LOGI(TAG, "Starting ESP32 SIP Client Application");
 
     // Initialize NVS Flash & Load Config
     config_manager_init();
+
+    // Boot-time factory reset: holding the control button wipes all settings,
+    // then the compile-time defaults are loaded below.
+    if (factory_reset_requested()) {
+        config_manager_reset();
+        ESP_LOGW(TAG, "Factory reset: settings restored to defaults");
+    }
+
     config_manager_load(&g_app_settings);
     
     // Initialize Phonebook Storage
@@ -130,6 +220,22 @@ void app_main(void) {
     display_init();
     display_update_status("Starting...", "Init", "");
 
+    // Initialize the LED matrix (caller ID / queue / alert). Off by default;
+    // enabled per-device on the web Display tab.
+    matrix_cfg_t mx_cfg;
+    if (build_matrix_cfg(&mx_cfg)) {
+        g_matrix_display = matrix_display_init(&mx_cfg);
+        if (g_matrix_display) {
+            // Startup test pattern so wiring can be verified at boot.
+            matrix_draw_text_center(g_matrix_display, 4, "SIP VOICE", 2, 0x00A0FF);
+            matrix_draw_text_center(g_matrix_display, 22, "READY", 1, 0x00FF00);
+            matrix_flush(g_matrix_display);
+        } else {
+            ESP_LOGW(TAG, "Matrix init failed (type %d); continuing without it",
+                     mx_cfg.type);
+        }
+    }
+
     // Create Event Group
     app_event_group = xEventGroupCreate();
     if (app_event_group == NULL) {
@@ -141,18 +247,22 @@ void app_main(void) {
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    // Initialize Wi-Fi (will block or start AP if missing config)
-    wifi_init_sta(app_event_group, WIFI_CONNECTED_BIT, IP_ACQUIRED_BIT, &g_app_settings); 
+    // Initialize networking: Wi-Fi and/or ENC28J60 Ethernet according to the
+    // stored network mode (AUTO prefers a wired link). Starts the captive-
+    // portal AP when Wi-Fi credentials are missing.
+    net_manager_start(app_event_group, WIFI_CONNECTED_BIT, IP_ACQUIRED_BIT, &g_app_settings);
 
-    if (wifi_is_ap_mode()) {
+    if (net_is_setup_ap()) {
         ESP_LOGI(TAG, "Running in AP Mode (Captive Portal). SIP disabled.");
         display_update_status("192.168.4.1", "AP Setup Mode", "ESP-SIP-Setup");
         ui_controller_init(NULL, &g_app_settings);
         return; // Stop initialization here
     }
 
-    esp_ip4_addr_t my_ip;
-    get_my_ip(&my_ip);
+    esp_ip4_addr_t my_ip = {0};
+    if (net_get_ip(&my_ip) != ESP_OK) {
+        ESP_LOGW(TAG, "No IP address yet; SIP will register once one is acquired.");
+    }
     char ip_str[16];
     snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&my_ip));
     display_update_status(ip_str, "Connecting SIP...", "");

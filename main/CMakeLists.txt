@@ -8,6 +8,7 @@ idf_component_register(
     SRCS
         "main.c"
         "wifi_manager.c"
+        "net_manager.c"
         "sip_client.c"
         "rtp_handler.c"
         "audio_pipeline.c"
@@ -32,8 +33,10 @@ idf_component_register(
         esp_driver_i2s
         # Project components (../components/*)
         config_store
+        eth_manager
         audio_pipeline
         board_hal
         storage
         ui_lvgl
+        matrix_display
 )

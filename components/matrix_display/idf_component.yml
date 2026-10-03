@@ -1,0 +1,14 @@
+## Dependencies for matrix_display.
+##
+## esphome/esp-hub75 drives HUB75 panels over DMA (ESP32/S2/S3/C6/P4) and is
+## only *used* when CONFIG_SIP_MATRIX_HUB75 is enabled; with the option off,
+## matrix_hub75.cpp compiles to a null stub and does not include hub75.h.
+##
+## The dependency is therefore commented out: the current registry version does
+## not build under ESP-IDF v6.1 (missing .intr_priority in
+## gdma_channel_alloc_config_t), and pulling it in unconditionally breaks the
+## default build. Re-add it (or a v6.1-compatible version) when enabling the
+## HUB75 backend.
+dependencies:
+  idf: ">=5.0"
+  # esphome/esp-hub75: "^0.3.0"

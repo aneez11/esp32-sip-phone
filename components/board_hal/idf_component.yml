@@ -1,0 +1,9 @@
+## Dependencies for the board_hal component.
+##
+## esp_lcd_ili9341 is the panel driver selected by USE_DISPLAY_ILI9341 (the
+## default is the ST7789 driver built into ESP-IDF, which needs no extra
+## component). It is pulled in unconditionally so the ILI9341 option — and the
+## Wokwi simulation, which emulates an ILI9341 — links.
+dependencies:
+  idf: ">=5.0"
+  espressif/esp_lcd_ili9341: "^2.0.0"

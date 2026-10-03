@@ -41,6 +41,17 @@ static void apply_defaults(app_settings_t *settings) {
     snprintf(settings->sip_target, sizeof(settings->sip_target), "%s", SIP_TARGET_URI);
     snprintf(settings->web_user, sizeof(settings->web_user), "%s", WEB_UI_USER);
     snprintf(settings->web_password, sizeof(settings->web_password), "%s", WEB_UI_PASSWORD);
+    settings->network_mode = NETWORK_MODE_DEFAULT;
+    settings->eth_dhcp = 1; // DHCP by default
+    snprintf(settings->eth_hostname, sizeof(settings->eth_hostname), "%s", ETH_HOSTNAME_DEFAULT);
+    settings->display_mode = DISPLAY_MODE_DEFAULT;
+    settings->matrix_type = MATRIX_TYPE_NONE;
+    settings->matrix_channels = MATRIX_COLOR_RGB;
+    settings->matrix_layout = MATRIX_LAYOUT_2D;
+    settings->matrix_brightness = MATRIX_BRIGHTNESS_DEFAULT;
+    settings->matrix_modules = MATRIX_MODULES_DEFAULT;
+    settings->matrix_width = 64;
+    settings->matrix_height = 32;
 }
 
 // Read a string key; keep the (already applied) default when it is absent.
@@ -69,6 +80,11 @@ esp_err_t config_manager_load(app_settings_t *settings) {
     get_str_or_keep(my_handle, "sip_target", settings->sip_target,  sizeof(settings->sip_target));
     get_str_or_keep(my_handle, "web_user",   settings->web_user,    sizeof(settings->web_user));
     get_str_or_keep(my_handle, "web_pass",   settings->web_password, sizeof(settings->web_password));
+    get_str_or_keep(my_handle, "eth_ip",     settings->eth_ip,      sizeof(settings->eth_ip));
+    get_str_or_keep(my_handle, "eth_mask",   settings->eth_netmask, sizeof(settings->eth_netmask));
+    get_str_or_keep(my_handle, "eth_gw",     settings->eth_gw,      sizeof(settings->eth_gw));
+    get_str_or_keep(my_handle, "eth_dns",    settings->eth_dns,     sizeof(settings->eth_dns));
+    get_str_or_keep(my_handle, "eth_host",   settings->eth_hostname, sizeof(settings->eth_hostname));
 
     uint16_t port = 0;
     if (nvs_get_u16(my_handle, "sip_port", &port) == ESP_OK && port != 0) {
@@ -91,6 +107,34 @@ esp_err_t config_manager_load(app_settings_t *settings) {
     if (nvs_get_u8(my_handle, "auto_answer", &delay) == ESP_OK) {
         settings->auto_answer_delay_s = (delay > AUTO_ANSWER_DELAY_MAX) ? AUTO_ANSWER_DELAY_MAX : delay;
     }
+    // Network interface (Wi-Fi / Ethernet) + static IPv4
+    uint8_t net_mode = 0;
+    if (nvs_get_u8(my_handle, "net_mode", &net_mode) == ESP_OK && net_mode <= NETWORK_MODE_ETHERNET) {
+        settings->network_mode = net_mode;
+    }
+    uint8_t eth_dhcp = 0;
+    if (nvs_get_u8(my_handle, "eth_dhcp", &eth_dhcp) == ESP_OK && eth_dhcp <= 1) {
+        settings->eth_dhcp = eth_dhcp;
+    }
+    // LED matrix display
+    uint8_t u8 = 0;
+    if (nvs_get_u8(my_handle, "disp_mode", &u8) == ESP_OK && u8 <= DISPLAY_MODE_ALL)
+        settings->display_mode = u8;
+    if (nvs_get_u8(my_handle, "mx_type", &u8) == ESP_OK && u8 <= MATRIX_TYPE_PREVIEW)
+        settings->matrix_type = u8;
+    if (nvs_get_u8(my_handle, "mx_chan", &u8) == ESP_OK && u8 <= MATRIX_COLOR_RGB)
+        settings->matrix_channels = u8;
+    if (nvs_get_u8(my_handle, "mx_lay", &u8) == ESP_OK && u8 <= MATRIX_LAYOUT_LINE)
+        settings->matrix_layout = u8;
+    if (nvs_get_u8(my_handle, "mx_bright", &u8) == ESP_OK && u8 <= 100)
+        settings->matrix_brightness = u8;
+    if (nvs_get_u8(my_handle, "mx_mod", &u8) == ESP_OK && u8 > 0 && u8 <= 8)
+        settings->matrix_modules = u8;
+    uint16_t u16 = 0;
+    if (nvs_get_u16(my_handle, "mx_w", &u16) == ESP_OK && u16 > 0)
+        settings->matrix_width = u16;
+    if (nvs_get_u16(my_handle, "mx_h", &u16) == ESP_OK && u16 > 0)
+        settings->matrix_height = u16;
 
     nvs_close(my_handle);
     ESP_LOGI(TAG, "Settings loaded from NVS");
@@ -112,11 +156,26 @@ esp_err_t config_manager_save(const app_settings_t *settings) {
     nvs_set_str(my_handle, "sip_target", settings->sip_target);
     nvs_set_str(my_handle, "web_user", settings->web_user);
     nvs_set_str(my_handle, "web_pass", settings->web_password);
+    nvs_set_str(my_handle, "eth_ip",   settings->eth_ip);
+    nvs_set_str(my_handle, "eth_mask", settings->eth_netmask);
+    nvs_set_str(my_handle, "eth_gw",   settings->eth_gw);
+    nvs_set_str(my_handle, "eth_dns",  settings->eth_dns);
+    nvs_set_str(my_handle, "eth_host", settings->eth_hostname);
+    nvs_set_u8(my_handle, "net_mode", settings->network_mode);
+    nvs_set_u8(my_handle, "eth_dhcp", settings->eth_dhcp);
     nvs_set_u16(my_handle, "sip_port", settings->sip_port);
     nvs_set_u8(my_handle, "audio_out", settings->audio_out);
     nvs_set_u8(my_handle, "volume", settings->volume);
     nvs_set_u8(my_handle, "role", settings->device_role);
     nvs_set_u8(my_handle, "auto_answer", settings->auto_answer_delay_s);
+    nvs_set_u8(my_handle, "disp_mode", settings->display_mode);
+    nvs_set_u8(my_handle, "mx_type", settings->matrix_type);
+    nvs_set_u8(my_handle, "mx_chan", settings->matrix_channels);
+    nvs_set_u8(my_handle, "mx_lay", settings->matrix_layout);
+    nvs_set_u8(my_handle, "mx_bright", settings->matrix_brightness);
+    nvs_set_u8(my_handle, "mx_mod", settings->matrix_modules);
+    nvs_set_u16(my_handle, "mx_w", settings->matrix_width);
+    nvs_set_u16(my_handle, "mx_h", settings->matrix_height);
 
     err = nvs_commit(my_handle);
     nvs_close(my_handle);
@@ -144,6 +203,31 @@ esp_err_t config_manager_load_hw(hardware_settings_t *hw_settings) {
     hw_settings->pin_tft_rst = -1;
     hw_settings->pin_touch_cs = -1;
     hw_settings->pin_touch_irq = -1;
+    // LED matrix — fall back to the target-specific app_config.h defaults.
+    hw_settings->pin_mx_r1 = MX_HUB75_R1;
+    hw_settings->pin_mx_g1 = MX_HUB75_G1;
+    hw_settings->pin_mx_b1 = MX_HUB75_B1;
+    hw_settings->pin_mx_r2 = MX_HUB75_R2;
+    hw_settings->pin_mx_g2 = MX_HUB75_G2;
+    hw_settings->pin_mx_b2 = MX_HUB75_B2;
+    hw_settings->pin_mx_a = MX_HUB75_A;
+    hw_settings->pin_mx_b = MX_HUB75_B;
+    hw_settings->pin_mx_c = MX_HUB75_C;
+    hw_settings->pin_mx_d = MX_HUB75_D;
+    hw_settings->pin_mx_e = MX_HUB75_E;
+    hw_settings->pin_mx_clk = MX_HUB75_CLK;
+    hw_settings->pin_mx_lat = MX_HUB75_LAT;
+    hw_settings->pin_mx_oe = MX_HUB75_OE;
+    hw_settings->pin_mx_din = MX_MAX7219_DIN;
+    hw_settings->pin_mx_mclk = MX_MAX7219_CLK;
+    hw_settings->pin_mx_cs = MX_MAX7219_CS;
+    // ENC28J60 SPI Ethernet — -1 = not wired (configure on the web).
+    hw_settings->pin_eth_cs = ETH_PIN_CS;
+    hw_settings->pin_eth_int = ETH_PIN_INT;
+    hw_settings->pin_eth_rst = ETH_PIN_RST;
+    hw_settings->pin_eth_sck = ETH_PIN_SCK;
+    hw_settings->pin_eth_miso = ETH_PIN_MISO;
+    hw_settings->pin_eth_mosi = ETH_PIN_MOSI;
     hw_settings->ui_theme = 0;
 
     err = nvs_open(STORAGE_NAMESPACE, NVS_READONLY, &my_handle);
@@ -191,10 +275,17 @@ esp_err_t config_manager_save_hw(const hardware_settings_t *hw_settings) {
 
 void config_manager_reset(void) {
     nvs_handle_t my_handle;
+    // Wi-Fi / SIP / web-login / network settings.
     if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &my_handle) == ESP_OK) {
         nvs_erase_all(my_handle);
         nvs_commit(my_handle);
         nvs_close(my_handle);
-        ESP_LOGI(TAG, "NVS reset complete");
     }
+    // GPIO map, matrix pins and UI theme.
+    if (nvs_open(STORAGE_NAMESPACE, NVS_READWRITE, &my_handle) == ESP_OK) {
+        nvs_erase_all(my_handle);
+        nvs_commit(my_handle);
+        nvs_close(my_handle);
+    }
+    ESP_LOGI(TAG, "Factory reset complete (all settings cleared)");
 }

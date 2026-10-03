@@ -26,4 +26,60 @@ menu "ESP32 SIP Voice Configuration"
                 Requires ESP32-S3 vector instructions and external PSRAM.
     endchoice
 
+    config SIP_WOKWI_SIM
+        bool "Wokwi simulation build (ILI9341 + Wokwi-GUEST)"
+        default n
+        help
+            Tailor the firmware for the bundled Wokwi simulation. Selects the
+            ILI9341 panel (the color TFT Wokwi emulates), connects to the open
+            Wokwi-GUEST Wi-Fi AP and lowers the Wi-Fi auth-mode threshold to
+            match. Enable only for simulation builds (see sdkconfig.wokwi.defaults);
+            keep it off for real hardware.
+
+    menu "LED matrix display (caller ID / queue / alert)"
+
+        config SIP_MATRIX_HUB75
+            bool "HUB75 backend (64x32 or chained)"
+            default n
+            help
+                Compile the HUB75 LED-panel backend (esphome/esp-hub75, DMA).
+                Recommended on ESP32-S3 (GDMA/LCD_CAM). Uses ~28 KB SRAM per
+                64x32 8-bit buffer. The panel is selected at runtime on the web
+                Hardware page once this is enabled.
+
+        config SIP_MATRIX_MAX7219
+            bool "MAX7219 8x8 array backend (single-line ticker)"
+            default n
+            help
+                Compile the MAX7219 8x8 module-chain backend (SPI bit-bang).
+                Cheap and Wokwi-simulatable; used as a one-line caller-ID
+                ticker (4 modules = 32x8, 8 modules = 64x8).
+
+    endmenu
+
+    menu "Ethernet (ENC28J60)"
+
+        config SIP_ETH_ENC28J60
+            bool "ENC28J60 SPI Ethernet (wired LAN)"
+            default n
+            select ETH_USE_SPI_ETHERNET
+            help
+                Add wired networking through a Microchip ENC28J60 10 Mbps SPI
+                Ethernet controller (espressif/enc28j60 registry component).
+                Pins are configured at runtime on the web Hardware -> Network
+                tab; INT is required because the driver is interrupt-driven.
+                When off the firmware is Wi-Fi only and behaviour is unchanged.
+
+        config SIP_ETH_SPI_CLOCK_MHZ
+            int "ENC28J60 SPI clock (MHz)"
+            range 8 20
+            default 10
+            depends on SIP_ETH_ENC28J60
+            help
+                SPI clock for the ENC28J60. 10 MHz is a safe default; chips
+                older than revision B5 require at least 8 MHz. Keep the wiring
+                short and add a 100 nF decoupling capacitor at the module.
+
+    endmenu
+
 endmenu

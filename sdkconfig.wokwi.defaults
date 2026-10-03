@@ -1,0 +1,21 @@
+# ===== Wokwi simulation overlay =====
+#
+# Used together with sdkconfig.defaults. Build the simulation firmware with
+# the helper script (wokwi/build.ps1 or wokwi/build.sh), or manually:
+#
+#   PowerShell:
+#     $env:SDKCONFIG = "build_wokwi/sdkconfig"
+#     $env:SDKCONFIG_DEFAULTS = "sdkconfig.defaults;sdkconfig.wokwi.defaults"
+#     idf.py -B build_wokwi set-target esp32
+#     idf.py -B build_wokwi build
+#
+#   bash:
+#     export SDKCONFIG=build_wokwi/sdkconfig
+#     export SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.wokwi.defaults"
+#     idf.py -B build_wokwi set-target esp32
+#     idf.py -B build_wokwi build
+#
+# This selects ILI9341 + Wokwi-GUEST in app_config.h (see the
+# CONFIG_SIP_WOKWI_SIM block). It has no effect on normal builds.
+
+CONFIG_SIP_WOKWI_SIM=y
