@@ -18,6 +18,7 @@
 #include "sip_client.h"
 #include "audio_pipeline.h"
 #include "app_config.h" // Include configurations
+#include "matrix_status.h"
 #include "ui_controller.h" // Include UI Controller
 #include "config_manager.h"
 #include "display.h"
@@ -73,9 +74,12 @@ static bool build_matrix_cfg(matrix_cfg_t *out) {
         out->layout = MX_LAYOUT_LINE;
         out->width = (uint16_t)(8 * out->modules);
         out->height = 8;
-        out->pins[0] = hw.pin_mx_din;
-        out->pins[1] = hw.pin_mx_mclk;
-        out->pins[2] = hw.pin_mx_cs;
+        // Unset pins fall back to the board defaults so a fresh device still
+        // brings the ticker up.
+        out->pins[0] = (hw.pin_mx_din  != -1) ? hw.pin_mx_din  : MX_MAX7219_DIN;
+        out->pins[1] = (hw.pin_mx_mclk != -1) ? hw.pin_mx_mclk : MX_MAX7219_CLK;
+        out->pins[2] = (hw.pin_mx_cs   != -1) ? hw.pin_mx_cs   : MX_MAX7219_CS;
+        out->chain_reversed = MATRIX_CHAIN_REVERSED;
     } else { // MATRIX_TYPE_PREVIEW
         out->type = MX_PREVIEW;
         out->layout = MX_LAYOUT_2D;
@@ -227,9 +231,8 @@ void app_main(void) {
     if (build_matrix_cfg(&mx_cfg)) {
         g_matrix_display = matrix_display_init(&mx_cfg);
         if (g_matrix_display) {
-            // Startup test pattern so wiring can be verified at boot.
-            matrix_draw_text_center(g_matrix_display, 4, "SIP VOICE", 2, 0x00A0FF);
-            matrix_draw_text_center(g_matrix_display, 22, "READY", 1, 0x00FF00);
+            // Brief boot marker; the status task repaints within 100 ms.
+            matrix_draw_text_center(g_matrix_display, 0, "SIP", 1, 0x00FF00);
             matrix_flush(g_matrix_display);
         } else {
             ESP_LOGW(TAG, "Matrix init failed (type %d); continuing without it",
@@ -252,6 +255,13 @@ void app_main(void) {
     // stored network mode (AUTO prefers a wired link). Starts the captive-
     // portal AP when Wi-Fi credentials are missing.
     net_manager_start(app_event_group, WIFI_CONNECTED_BIT, IP_ACQUIRED_BIT, &g_app_settings);
+
+    // Live status on the LED matrix (setup / offline / registering / ready /
+    // incoming / calling / in call + volume overlay). Started before the AP
+    // early-return so the ticker works in captive-portal mode too.
+    if (g_matrix_display) {
+        matrix_status_start(g_matrix_display, app_event_group, &g_sip_client, &g_app_settings);
+    }
 
     if (net_is_setup_ap()) {
         ESP_LOGI(TAG, "Running in AP Mode (Captive Portal). SIP disabled.");

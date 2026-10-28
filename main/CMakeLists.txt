@@ -15,6 +15,7 @@ idf_component_register(
         "g711_codec.c"
         "codec_driver.c"
         "ui_controller.c"
+        "matrix_status.c"
         "display.c"
     INCLUDE_DIRS
         "."

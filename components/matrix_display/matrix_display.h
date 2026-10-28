@@ -53,6 +53,9 @@ typedef struct {
     uint16_t        height;     // HUB75: 32  MAX7219: 8
     uint8_t         modules;    // MAX7219 chain length
     uint8_t         brightness; // 0-100
+    // MAX7219 only: the module wired to the ESP32 is the rightmost panel, so
+    // screen x=0 is the farthest module. Costs nothing on other backends.
+    bool            chain_reversed;
     int8_t          pins[14];
 } matrix_cfg_t;
 
@@ -72,11 +75,22 @@ void matrix_set_brightness(matrix_display_handle_t h, uint8_t percent);
 // Draw text at (x,y). scale 1..4. Returns the pixel width consumed.
 int  matrix_draw_text(matrix_display_handle_t h, int x, int y,
                       const char *text, uint8_t scale, uint32_t rgb);
-// Draw text horizontally centred on its row (ignored in MX_LAYOUT_LINE).
+// Draw text horizontally centred on its row. On MX_LAYOUT_LINE panels the text
+// is centred on the single row and `y` is ignored.
 void matrix_draw_text_center(matrix_display_handle_t h, int y,
                              const char *text, uint8_t scale, uint32_t rgb);
 int  matrix_draw_number(matrix_display_handle_t h, int x, int y,
                         int value, uint8_t scale, uint32_t rgb);
+
+// Single pixel (for status animations / level meters). Clipped, mutex-protected.
+void matrix_set_pixel(matrix_display_handle_t h, int x, int y, uint32_t rgb);
+
+// Pixel width of `text` at `scale` (advance included, trailing gap excluded).
+int  matrix_text_width(const char *text, uint8_t scale);
+
+// Panel geometry (0 for a NULL handle).
+uint16_t matrix_width(matrix_display_handle_t h);
+uint16_t matrix_height(matrix_display_handle_t h);
 
 // Scrolling ticker: copies the text and lets the backend task animate it.
 void matrix_scroll_begin(matrix_display_handle_t h, const char *text,

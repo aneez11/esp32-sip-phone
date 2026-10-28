@@ -45,7 +45,7 @@ static void apply_defaults(app_settings_t *settings) {
     settings->eth_dhcp = 1; // DHCP by default
     snprintf(settings->eth_hostname, sizeof(settings->eth_hostname), "%s", ETH_HOSTNAME_DEFAULT);
     settings->display_mode = DISPLAY_MODE_DEFAULT;
-    settings->matrix_type = MATRIX_TYPE_NONE;
+    settings->matrix_type = MATRIX_TYPE_DEFAULT;
     settings->matrix_channels = MATRIX_COLOR_RGB;
     settings->matrix_layout = MATRIX_LAYOUT_2D;
     settings->matrix_brightness = MATRIX_BRIGHTNESS_DEFAULT;

@@ -186,13 +186,42 @@ void matrix_draw_text_center(matrix_display_handle_t h, int y,
     struct matrix_display_s *d = h;
     if (!d || !text) return;
     if (scale < 1) scale = 1;
-    if (d->cfg.layout == MX_LAYOUT_LINE)
-        return; // centred text is meaningless on a 1-line ticker
 
-    int len = (int)strlen(text);
-    int w = len * (FONT5X7_W * scale + scale) - scale;
+    // On a single-line ticker "centred" only means horizontally centred, and
+    // the 7-px glyphs occupy the whole height.
+    int row = (d->cfg.layout == MX_LAYOUT_LINE) ? 0 : y;
+    int w = matrix_text_width(text, scale);
     int x = ((int)d->cfg.width - w) / 2;
-    matrix_draw_text(h, x, y, text, scale, rgb);
+    matrix_draw_text(h, x, row, text, scale, rgb);
+}
+
+void matrix_set_pixel(matrix_display_handle_t h, int x, int y, uint32_t rgb)
+{
+    struct matrix_display_s *d = h;
+    if (!d) return;
+    xSemaphoreTake(d->lock, portMAX_DELAY);
+    fb_pixel(d, x, y, rgb);
+    xSemaphoreGive(d->lock);
+}
+
+int matrix_text_width(const char *text, uint8_t scale)
+{
+    if (!text || !*text) return 0;
+    if (scale < 1) scale = 1;
+    if (scale > 4) scale = 4;
+    return (int)strlen(text) * (FONT5X7_W * scale + scale) - scale;
+}
+
+uint16_t matrix_width(matrix_display_handle_t h)
+{
+    struct matrix_display_s *d = h;
+    return d ? d->cfg.width : 0;
+}
+
+uint16_t matrix_height(matrix_display_handle_t h)
+{
+    struct matrix_display_s *d = h;
+    return d ? d->cfg.height : 0;
 }
 
 int matrix_draw_number(matrix_display_handle_t h, int x, int y,

@@ -341,7 +341,18 @@
 
 #define DISPLAY_MODE_DEFAULT    DISPLAY_MODE_CALLER_ID
 #define MATRIX_BRIGHTNESS_DEFAULT 60
-#define MATRIX_MODULES_DEFAULT    8
+
+// On the ESP32-S3 speaker build the 8x8 x4 MAX7219 ticker is the status
+// display, and its module wired to the ESP32 is the RIGHTMOST panel.
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+#  define MATRIX_TYPE_DEFAULT      MATRIX_TYPE_MAX7219
+#  define MATRIX_MODULES_DEFAULT   4
+#  define MATRIX_CHAIN_REVERSED    1
+#else
+#  define MATRIX_TYPE_DEFAULT      MATRIX_TYPE_NONE
+#  define MATRIX_MODULES_DEFAULT   8
+#  define MATRIX_CHAIN_REVERSED    0
+#endif
 
 // --- Task configuration ---
 #define WIFI_TASK_PRIORITY      5
