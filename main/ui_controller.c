@@ -2,6 +2,8 @@
 #include "app_config.h"
 #include "codec_driver.h"
 #include "config_manager.h"
+#include "matrix_display.h"
+#include "matrix_status.h"
 #include "wifi_manager.h"
 #include "net_manager.h"
 #include "ota_manager.h"
@@ -32,6 +34,13 @@ static app_settings_t *g_settings = NULL;
 
 // Owned by main.c; used to report the SIP registration state on the web page.
 extern EventGroupHandle_t app_event_group;
+// Owned by main.c; the live matrix handle (may be NULL if no matrix configured).
+extern matrix_display_handle_t g_matrix_display;
+
+// Defined with the HTTP handlers; declared here because the Hardware handler
+// uses it before that point.
+static bool matrix_pin_conflict(const hardware_settings_t *hw, uint8_t matrix_type,
+                                char *out, size_t out_len);
 
 // =====================================================================
 //  Session handling (cookie based)
@@ -418,6 +427,10 @@ static const char PAGE_CSS[] =
     "input:focus,select:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 2px #dbeafe;}"
     "input[type=range]{padding:0;border:0;background:none;accent-color:var(--primary);}"
     ".hint{display:block;font-size:11px;color:var(--muted);margin-top:5px;line-height:1.4;}"
+    ".checks{display:flex;flex-wrap:wrap;gap:6px 14px;}"
+    ".check{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text);"
+    "text-transform:none;letter-spacing:0;margin:0;font-weight:500;}"
+    ".check input{width:auto;margin:0;}"
     ".sub{font-size:12px;color:var(--muted);margin-bottom:12px;}"
     ".pill{display:inline-block;font-size:11px;font-weight:600;padding:3px 8px;border-radius:12px;"
     "background:var(--bg);border:1px solid var(--border);color:var(--muted);margin:0 4px 6px 0;}"
@@ -1085,6 +1098,18 @@ static esp_err_t index_get_handler(httpd_req_t *req) {
 #endif
     pg_puts(&p, "</div></div>"); // .card, .col-12 (Device)
 
+    // Matrix ASCII preview (if a matrix is configured).
+    if (g_matrix_display) {
+        char ascii[512];
+        matrix_get_ascii(g_matrix_display, ascii, sizeof(ascii));
+        pg_puts(&p, "<div class='col-12'><div class='card'><div class='card-title'>Matrix preview</div>"
+                    "<pre style='font-family:monospace;font-size:10px;line-height:1.1;"
+                    "background:var(--bg);padding:8px;border-radius:6px;overflow:auto;"
+                    "color:var(--text);margin:0'>");
+        pg_escape(&p, ascii);
+        pg_puts(&p, "</pre></div></div>");
+    }
+
     // --- Network mode (prominent quick switch; restart to apply) ---
     if (g_settings) {
         static const struct { int m; const char *label; } net_choices[3] = {
@@ -1144,15 +1169,31 @@ static esp_err_t setup_get_handler(httpd_req_t *req) {
     }
 
     // Tab bar: one section per tab so nothing is crammed onto one page.
-    const char *tab_ids[5], *tab_labels[5];
+    // Must be at least the number of tabs below (mode, wifi, sip, call,
+    // display, web). Undersizing this array wrote past the end and corrupted
+    // adjacent stack, which showed up as a stray/blank tab and random crashes.
+    #define SETUP_TAB_MAX 8
+    const char *tab_ids[SETUP_TAB_MAX], *tab_labels[SETUP_TAB_MAX];
     int tab_count = 0;
-    tab_ids[tab_count] = "mode"; tab_labels[tab_count++] = "Mode &amp; Audio";
-    tab_ids[tab_count] = "wifi"; tab_labels[tab_count++] = "Wi-Fi";
-    tab_ids[tab_count] = "sip";  tab_labels[tab_count++] = "SIP Server";
-    tab_ids[tab_count] = "call"; tab_labels[tab_count++] = "Calling";
+    // Bounds-checked: adding a tab can no longer overrun the array.
+    #define SETUP_ADD_TAB(id, label)                                              \
+        do {                                                                      \
+            if (tab_count < SETUP_TAB_MAX) {                                      \
+                tab_ids[tab_count] = (id);                                        \
+                tab_labels[tab_count] = (label);                                  \
+                tab_count++;                                                      \
+            }                                                                     \
+        } while (0)
+    SETUP_ADD_TAB("network", "Network");
+    SETUP_ADD_TAB("sip", "SIP Account");
+    SETUP_ADD_TAB("call", "Calling");
+    SETUP_ADD_TAB("audio", "Audio");
+    SETUP_ADD_TAB("display", "Display");
+    SETUP_ADD_TAB("screen", "Screen");
     if (!wifi_is_ap_mode()) {
-        tab_ids[tab_count] = "web"; tab_labels[tab_count++] = "Web Login";
+        SETUP_ADD_TAB("access", "Access");
     }
+    #undef SETUP_ADD_TAB
     char tab[16];
     tab_value(req, tab, sizeof(tab));
     bool valid = false;
@@ -1164,20 +1205,15 @@ static esp_err_t setup_get_handler(httpd_req_t *req) {
     render_tabs(&p, "/setup", tab_ids, tab_labels, tab_count, tab);
     pg_puts(&p, "<form method='POST' action='/setup'><div class='grid'>");
 
-    // --- Mode (device role) + audio hardware ---
+    // --- Calling: device behaviour ---
     static const char *roles[] = {
         "Phone - ring and answer manually",
         "Speaker - answer incoming calls automatically",
     };
-    static const char *audio_outs[] = {
-        "Auto - detect the I2C codec, else plain I2S",
-        "Plain I2S amp - MAX98357A / PCM5102 (no control bus)",
-        "I2C codec - ES8388 / ES8311",
-    };
-    if (strcmp(tab, "mode") == 0) {
-    pg_puts(&p, "<div class='card col-12'><div class='card-title'>Mode &amp; audio</div>"
-                "<p class='hint' style='margin:0 0 12px'>How this device behaves when somebody "
-                "calls it, and which audio hardware it drives.</p>"
+    if (strcmp(tab, "call") == 0) {
+    pg_puts(&p, "<div class='card col-12'><div class='card-title'>How calls are answered</div>"
+                "<p class='hint' style='margin:0 0 12px'>Behaviour on an incoming call, and the "
+                "number dialled by the Call button, the physical button and the wake word.</p>"
                 "<div class='fields'>");
     field_select(&p, "role", "Device mode", roles, 2, g_settings->device_role,
                  "<b>Phone</b> rings until somebody answers on the keypad, screen or this page. "
@@ -1186,7 +1222,24 @@ static esp_err_t setup_get_handler(httpd_req_t *req) {
               g_settings->auto_answer_delay_s, 0, AUTO_ANSWER_DELAY_MAX,
               "Speaker mode only: 0 answers immediately, up to 30 s gives people time to move away "
               "from the speaker.");
-    field_select(&p, "audio_out", "Audio output", audio_outs, 3, g_settings->audio_out,
+    field_text(&p, "sip_target", "Default call target", g_settings->sip_target,
+               "sip:1001@192.168.1.100", "text", 63,
+               "SIP URI dialled by the Call button, the physical button and the wake word.");
+    pg_puts(&p, "</div></div>");
+    } // tab: call
+
+    // --- Audio: output hardware + volume ---
+    static const char *audio_outs[] = {
+        "Auto - detect the I2C codec, else plain I2S",
+        "Plain I2S amp - MAX98357A / PCM5102 (no control bus)",
+        "I2C codec - ES8388 / ES8311",
+    };
+    if (strcmp(tab, "audio") == 0) {
+    pg_puts(&p, "<div class='card col-12'><div class='card-title'>Audio output</div>"
+                "<p class='hint' style='margin:0 0 12px'>Which audio hardware the firmware drives. "
+                "The I2S pins themselves are on <a class='link' href='/hardware?tab=audio'>"
+                "Hardware &rarr; I2S Audio</a>.</p><div class='fields'>");
+    field_select(&p, "audio_out", "Output", audio_outs, 3, g_settings->audio_out,
                  "<b>Plain I2S amp</b> for MAX98357A, PCM5102, UDA1334 and similar DACs that have "
                  "no control bus (volume is then scaled in software). <b>I2C codec</b> for ES8388/"
                  "ES8311 modules. <b>Auto</b> picks the codec when I2C pins are wired and it "
@@ -1198,10 +1251,10 @@ static esp_err_t setup_get_handler(httpd_req_t *req) {
     field_range(&p, "volume", "Volume", g_settings->volume, 0, AUDIO_VOLUME_MAX,
                 AUDIO_VOLUME_STEP, vol_hint);
     pg_puts(&p, "</div></div>");
-    } // tab: mode
+    } // tab: audio
 
-    // --- Wi-Fi ---
-    if (strcmp(tab, "wifi") == 0) {
+    // --- Network: Wi-Fi + (optional) Ethernet addressing ---
+    if (strcmp(tab, "network") == 0) {
     pg_puts(&p, "<div class='card col-12'><div class='card-title'>Wi-Fi</div>"
                 "<p class='hint' style='margin:0 0 12px'>The network this phone joins. "
                 "Changing it restarts the device.</p>"
@@ -1211,8 +1264,47 @@ static esp_err_t setup_get_handler(httpd_req_t *req) {
                "2.4 GHz network name. The ESP32 cannot join 5 GHz-only networks.");
     field_password(&p, "wifi_pass", "Wi-Fi password",
                    "Stored in NVS on the device. Empty keeps the current one.");
+    {
+        static const char *wifi_dhcp_modes[] = { "Static IP", "DHCP (automatic)" };
+        field_select(&p, "wifi_dhcp", "Addressing", wifi_dhcp_modes, 2, g_settings->wifi_dhcp,
+                     "<b>DHCP</b> asks the router for an address (recommended). <b>Static</b> "
+                     "uses the fields below; the device then has no automatic fallback, so make "
+                     "sure the address is outside the router's DHCP pool.");
+        field_text(&p, "wifi_ip",   "IP address",  g_settings->wifi_ip,      "192.168.1.42",  "text", 15,
+                   "Static only.");
+        field_text(&p, "wifi_mask", "Netmask",     g_settings->wifi_netmask, "255.255.255.0", "text", 15, NULL);
+        field_text(&p, "wifi_gw",   "Gateway",     g_settings->wifi_gw,      "192.168.1.1",   "text", 15,
+                   "Usually the router.");
+        field_text(&p, "wifi_dns",  "DNS server",  g_settings->wifi_dns,     "192.168.1.1",   "text", 15,
+                   "Optional; leave empty to use the gateway.");
+    }
     pg_puts(&p, "</div></div>");
-    } // tab: wifi
+#if defined(CONFIG_SIP_ETH_ENC28J60)
+    {
+        static const char *net_modes[] = {
+            "Auto - prefer Ethernet, fall back to Wi-Fi",
+            "Wi-Fi only",
+            "Ethernet only (no Wi-Fi station)",
+        };
+        static const char *dhcp_modes[] = { "Static IP", "DHCP (automatic)" };
+        pg_puts(&p, "<div class='card col-12'><div class='card-title'>Ethernet</div>"
+                    "<p class='hint' style='margin:0 0 12px'>Optional wired interface "
+                    "(ENC28J60). The pins are on <a class='link' href='/hardware?tab=eth'>"
+                    "Hardware &rarr; Ethernet</a>.</p><div class='fields'>");
+        field_select(&p, "net_mode", "Interface", net_modes, 3, g_settings->network_mode,
+                     "<b>Auto</b> uses Ethernet when a cable is plugged in and otherwise Wi-Fi.");
+        field_select(&p, "eth_dhcp", "Addressing", dhcp_modes, 2, g_settings->eth_dhcp,
+                     "DHCP asks the router for an address; Static uses the fields below.");
+        field_text(&p, "eth_ip",   "Static IP", g_settings->eth_ip,      "192.168.1.50",  "text", 15, NULL);
+        field_text(&p, "eth_mask", "Netmask",   g_settings->eth_netmask, "255.255.255.0", "text", 15, NULL);
+        field_text(&p, "eth_gw",   "Gateway",   g_settings->eth_gw,      "192.168.1.1",   "text", 15, NULL);
+        field_text(&p, "eth_dns",  "DNS server", g_settings->eth_dns,    "192.168.1.1",   "text", 15, NULL);
+        field_text(&p, "eth_host", "Hostname",  g_settings->eth_hostname, ETH_HOSTNAME_DEFAULT, "text", 31,
+                   "Name advertised to the router (DHCP only).");
+        pg_puts(&p, "</div></div>");
+    }
+#endif
+    } // tab: network
 
     // --- SIP server ---
     if (strcmp(tab, "sip") == 0) {
@@ -1246,20 +1338,202 @@ static esp_err_t setup_get_handler(httpd_req_t *req) {
     pg_puts(&p, "</div></div>");
     } // tab: sip
 
-    // --- Calling ---
-    if (strcmp(tab, "call") == 0) {
-    pg_puts(&p, "<div class='card col-12'><div class='card-title'>Calling</div>"
-                "<p class='hint' style='margin:0 0 12px'>What the physical button, the wake word "
-                "and the web <b>Call</b> button dial.</p>"
-                "<div class='fields'>");
-    field_text(&p, "sip_target", "Default call target", g_settings->sip_target,
-               "sip:1001@192.168.1.100", "text", 63,
-               "Full SIP URI, e.g. sip:1001@192.168.1.100 or sip:reception@provider.com.");
+    // --- Display: which panel is fitted and how it is driven ---
+    if (strcmp(tab, "display") == 0) {
+    static const char *mx_types[] = {
+        "None (disabled)",
+        "HUB75 64x32 (DMA)",
+        "MAX7219 8x8 chain",
+        "Preview (ASCII only)",
+        "HUB12 32x16 (P10)",
+    };
+    static const char *mx_colours[] = { "Mono red", "Mono green", "Mono blue", "RGB" };
+    static const char *mx_layouts[] = { "2D (full panel)", "Single line (8-px ticker)" };
+    static const char *mx_scans[] = { "Auto", "1/4 scan", "1/8 scan", "1/16 scan", "1/32 scan" };
+    static const char *mx_aspects[] = {
+        "Square (1:1)", "Wide (2:1) - pixels twice as wide", "Tall (1:2) - pixels twice as tall",
+    };
+    static const char *themes[] = { "Voice Assistant", "Mobile OS", "Smart Speaker" };
+    hardware_settings_t hwd;
+    config_manager_load_hw(&hwd);
+
+    pg_puts(&p, "<div class='card col-12'><div class='card-title'>Panel</div>"
+                "<p class='hint' style='margin:0 0 12px'>Which LED matrix is fitted. The GPIO "
+                "wiring for the selected type is on <a class='link' href='/hardware?tab=matrix'>"
+                "Hardware &rarr; LED Matrix</a>. Changing the type or geometry restarts the "
+                "device; brightness and aspect apply live.</p><div class='fields'>");
+    field_select(&p, "matrix_type", "Panel type", mx_types, 5, g_settings->matrix_type,
+                 "None disables the matrix. HUB12 is the 12-pin 32x16 panel; HUB75 the 64x32 "
+                 "panel; MAX7219 an 8x8 module chain; Preview renders ASCII only.");
+    field_select(&p, "matrix_channels", "Colour", mx_colours, 4, g_settings->matrix_channels,
+                 "Mono uses only the populated colour channel; RGB uses all three.");
+    field_select(&p, "matrix_layout", "Layout", mx_layouts, 2, g_settings->matrix_layout,
+                 "2D uses the full panel; single line is an 8-px scrolling ticker.");
+    field_num(&p, "matrix_modules", "Module count (MAX7219)", g_settings->matrix_modules, 1, 8,
+              "Chain length for the MAX7219 backend.");
+    field_num(&p, "matrix_width", "Panel width (px)", g_settings->matrix_width, 8, 128,
+              "HUB panels only.");
+    field_num(&p, "matrix_height", "Panel height (px)", g_settings->matrix_height, 8, 64,
+              "HUB panels only. 16 -> 1/4 scan, 32 -> 1/16 scan (auto).");
+    field_select(&p, "matrix_scan", "Scan", mx_scans, 5, g_settings->matrix_scan,
+                 "Auto picks by height. Override if the panel shows a doubled/half image.");
+    field_select(&p, "matrix_pixel_aspect", "Pixel aspect", mx_aspects, 3,
+                 g_settings->matrix_pixel_aspect,
+                 "Match the LED pitch. Wide stretches glyphs so text is not squashed.");
+    field_num(&p, "matrix_brightness", "Brightness (%)", g_settings->matrix_brightness, 0, 100,
+              "Applied live.");
     pg_puts(&p, "</div></div>");
-    } // tab: call
+
+    pg_puts(&p, "<div class='card col-12'><div class='card-title'>TFT theme</div>"
+                "<p class='hint' style='margin:0 0 12px'>Look of the on-device TFT screen "
+                "(drawn by LVGL). Applied after a restart.</p><div class='fields'>");
+    field_select(&p, "ui_theme", "Theme", themes, 3, hwd.ui_theme,
+                 "Voice Assistant shows a clock and a glowing orb, Mobile OS looks like a phone "
+                 "call screen, Smart Speaker fills the screen with a neon ring.");
+    pg_puts(&p, "</div></div>");
+    } // tab: display
+
+    // --- Screen: what the panel shows (mode / clock / saver / multi-line) ---
+    if (strcmp(tab, "screen") == 0) {
+    static const char *ss_modes[] = { "Off", "Single", "Rotate", "Random" };
+    static const char *ss_speeds[] = { "Slow", "Normal", "Fast" };
+    static const char *line_srcs[] = {
+        "Blank", "Caller", "Queue count", "Alert text", "SIP user", "SIP server",
+        "IP address", "Uptime", "Volume", "Custom 1", "Custom 2", "Custom 3",
+        "Custom 4", "Time", "Date", "Status",
+    };
+    static const char *disp_modes[] = {
+        "Off (blank panel)", "Caller ID", "Queue count", "Alert text", "All",
+    };
+    pg_puts(&p, "<div class='card col-12'><div class='card-title'>Display mode</div>"
+                "<p class='hint' style='margin:0 0 12px'>What the panel is used for. "
+                "<b>Off</b> blanks it; the others follow the call state.</p><div class='fields'>");
+    field_select(&p, "display_mode", "Mode", disp_modes, 5, g_settings->display_mode,
+                 "Caller ID and All show READY/extension when idle. Queue count shows the "
+                 "queue (0 until a queue service exists). Alert shows the alert text. Applied live.");
+    pg_puts(&p, "</div></div>");
+
+    // --- Clock ---
+    static const char *clock_modes[] = { "Off", "Show clock when idle" };
+    static const char *clock_formats[] = { "24-hour (14:05)", "12-hour (02:05)" };
+    static const char *clock_dates[] = { "Hide date", "Show date (tall panels)" };
+    pg_puts(&p, "<div class='card col-12'><div class='card-title'>Clock</div>"
+                "<p class='hint' style='margin:0 0 12px'>Displays the time from NTP on the "
+                "panel. Also used by the Clock screensaver and the Time/Date line sources.</p>"
+                "<div class='fields'>");
+    field_select(&p, "clock_mode", "When idle", clock_modes, 2, g_settings->clock_mode,
+                 "Replaces the READY/extension screen with the clock. Applied live.");
+    field_select(&p, "clock_12h", "Format", clock_formats, 2, g_settings->clock_12h,
+                 "12-hour shows 01:00-12:59 without AM/PM (the panel is too narrow).");
+    field_select(&p, "clock_date", "Date", clock_dates, 2, g_settings->clock_date,
+                 "On panels 16 px or taller the date is drawn under the time.");
+    field_num(&p, "clock_offset_min", "Time offset (minutes)",
+              g_settings->clock_offset_min, -1440, 1440,
+              "Added to the NTP time, e.g. 330 for IST if the built-in timezone is wrong. 0 = none.");
+    pg_puts(&p, "</div></div>");
+
+    pg_puts(&p, "<div class='card col-12'><div class='card-title'>Screensaver</div>"
+                "<p class='hint' style='margin:0 0 12px'>Shown after the panel has been idle. "
+                "Hot-swappable, no restart.</p><div class='fields'>");
+    field_select(&p, "ss_enabled", "Enabled", (const char *const[]){"Off","On"}, 2,
+                 g_settings->ss_enabled, "Turn the screensaver on or off.");
+    field_select(&p, "ss_mode", "Mode", ss_modes, 4, g_settings->ss_mode,
+                 "Single uses the first enabled effect; Rotate cycles; Random picks.");
+    field_num(&p, "ss_idle_s", "Idle timeout (s)", g_settings->ss_idle_s, 0, 255,
+              "Seconds of READY before the saver starts. 0 disables it.");
+    {
+        static const char *effect_names[7] = {
+            "Bounce", "Rain", "Snake", "Sparkle", "Scroll text", "Level meter", "Clock",
+        };
+        pg_puts(&p, "<div class='field'><label>Enabled effects</label><div class='checks'>");
+        for (int e = 0; e < 7; e++) {
+            pg_printf(&p, "<label class='check'><input type='checkbox' name='ss_e%d' "
+                          "value='1'%s> %s</label>",
+                      e, (g_settings->ss_mask & (1 << e)) ? " checked" : "", effect_names[e]);
+        }
+        pg_puts(&p, "</div><span class='hint'>Only these effects are used by Single/Rotate/Random. "
+                    "If none is ticked, Scroll text is used.</span></div>");
+    }
+    field_select(&p, "ss_speed", "Speed", ss_speeds, 3, g_settings->ss_speed,
+                 "Affects scroll and animation frame rate.");
+    field_num(&p, "ss_bright", "Dim brightness (%)", g_settings->ss_bright, 0, 100,
+              "0 follows the main brightness; otherwise dims to this level.");
+    pg_puts(&p, "</div></div>");
+
+    // Custom texts
+    pg_puts(&p, "<div class='card col-12'><div class='card-title'>Custom texts</div>"
+                "<p class='hint' style='margin:0 0 12px'>Used by the scrolling-text saver "
+                "and by Custom 1..4 line slots. Empty slots are skipped.</p><div class='fields'>");
+    for (int i = 0; i < 4; i++) {
+        char name[32], label[32];
+        snprintf(name, sizeof(name), "ss_t%d", i);
+        snprintf(label, sizeof(label), "Text %d", i + 1);
+        field_text(&p, name, label, g_settings->ss_text[i], "SIP PHONE", "text", 63,
+                   "31 chars fit a 32-px panel; longer strings scroll.");
+    }
+    pg_puts(&p, "</div></div>");
+
+    // Multi-line layout
+    pg_puts(&p, "<div class='card col-12'><div class='card-title'>Multi-line layout</div>"
+                "<p class='hint' style='margin:0 0 12px'>Each row can show a different data "
+                "source. Span 2 makes a row double-height (consumes the next row).</p>");
+    // header
+    pg_puts(&p, "<table><tr><td><b>Slot</b></td><td><b>Source</b></td>"
+                "<td><b>Scale</b></td><td><b>Span</b></td><td><b>Align</b></td>"
+                "<td><b>Scroll</b></td></tr>");
+    for (int i = 0; i < 4; i++) {
+        pg_printf(&p, "<tr><td>%d</td>", i + 1);
+        // source select
+        pg_printf(&p, "<td><select name='ln_s%d'>", i);
+        for (int s = 0; s < 16; s++) {
+            pg_printf(&p, "<option value='%d'%s>%s</option>", s,
+                      (g_settings->line_src[i] == (uint8_t)s) ? " selected" : "", line_srcs[s]);
+        }
+        pg_puts(&p, "</select></td>");
+        // scale
+        pg_printf(&p, "<td><select name='ln_sc%d'><option value='0'%s>Auto</option>",
+                  i, (g_settings->line_scale[i] == 0) ? " selected" : "");
+        for (int sc = 1; sc <= 4; sc++) {
+            pg_printf(&p, "<option value='%d'%s>%d</option>", sc,
+                      (g_settings->line_scale[i] == (uint8_t)sc) ? " selected" : "", sc);
+        }
+        pg_puts(&p, "</select></td>");
+        // span
+        pg_printf(&p, "<td><select name='ln_sp%d'>", i);
+        for (int sp = 1; sp <= 4; sp++) {
+            pg_printf(&p, "<option value='%d'%s>%d</option>", sp,
+                      (g_settings->line_span[i] == (uint8_t)sp) ? " selected" : "", sp);
+        }
+        pg_puts(&p, "</select></td>");
+        // align
+        static const char *aligns[] = { "Left", "Centre", "Right" };
+        pg_printf(&p, "<td><select name='ln_al%d'>", i);
+        for (int a = 0; a < 3; a++) {
+            pg_printf(&p, "<option value='%d'%s>%s</option>", a,
+                      (g_settings->line_align[i] == (uint8_t)a) ? " selected" : "", aligns[a]);
+        }
+        pg_puts(&p, "</select></td>");
+        // scroll
+        pg_printf(&p, "<td><input type='checkbox' name='ln_sr%d' value='1'%s></td></tr>",
+                  i, g_settings->line_scroll[i] ? " checked" : "");
+    }
+    pg_puts(&p, "</table>");
+    field_num(&p, "line_count", "Active slots", g_settings->line_count, 1, 4,
+              "Slots beyond the panel height are ignored.");
+    pg_puts(&p, "</div></div>");
+
+    pg_puts(&p, "<div class='col-12'><div class='savebar'>"
+                "<button class='btn primary' type='submit'>Save display settings</button>"
+                "<span class='hint'>Applied live, no restart.</span></div></div>");
+    pg_puts(&p, "</div></form>");
+    pg_device_footer(&p);
+    pg_foot(&p);
+    send_page(req, &p);
+    return ESP_OK;
+    } // tab: screen
 
     // --- Web access ---
-    if (strcmp(tab, "web") == 0) {
+    if (strcmp(tab, "access") == 0) {
         pg_puts(&p, "<div class='card col-12'><div class='card-title'>Web access</div>"
                     "<p class='hint' style='margin:0 0 12px'>Credentials for this web interface. "
                     "Changing them does not sign you out here.</p>"
@@ -1301,10 +1575,23 @@ static esp_err_t setup_post_handler(httpd_req_t *req) {
     app_settings_t updated = *g_settings;
     // Which group of settings changed decides how (and whether) we restart.
     bool wifi_changed = false, sip_changed = false, web_changed = false;
-    bool mode_changed = false, audio_changed = false, too_long = false;
+    bool mode_changed = false, audio_changed = false, display_changed = false, too_long = false;
 
     apply_field(buf, "ssid",         updated.wifi_ssid,        sizeof(updated.wifi_ssid),        false, &wifi_changed, &too_long);
     apply_field(buf, "wifi_pass",    updated.wifi_password,    sizeof(updated.wifi_password),    false, &wifi_changed, &too_long);
+    // Wi-Fi addressing (DHCP or static)
+    char wv[16];
+    if (form_get(buf, "wifi_dhcp", wv, sizeof(wv)) && wv[0]) {
+        int d = atoi(wv);
+        if (d >= 0 && d <= 1 && (uint8_t)d != updated.wifi_dhcp) {
+            updated.wifi_dhcp = (uint8_t)d;
+            wifi_changed = true;
+        }
+    }
+    apply_field(buf, "wifi_ip",   updated.wifi_ip,      sizeof(updated.wifi_ip),      true, &wifi_changed, &too_long);
+    apply_field(buf, "wifi_mask", updated.wifi_netmask, sizeof(updated.wifi_netmask), true, &wifi_changed, &too_long);
+    apply_field(buf, "wifi_gw",   updated.wifi_gw,      sizeof(updated.wifi_gw),      true, &wifi_changed, &too_long);
+    apply_field(buf, "wifi_dns",  updated.wifi_dns,     sizeof(updated.wifi_dns),     true, &wifi_changed, &too_long);
     apply_field(buf, "sip_server",   updated.sip_server,       sizeof(updated.sip_server),       false, &sip_changed,  &too_long);
     apply_field(buf, "sip_user",     updated.sip_user,         sizeof(updated.sip_user),         false, &sip_changed,  &too_long);
     apply_field(buf, "sip_pass",     updated.sip_password,     sizeof(updated.sip_password),     false, &sip_changed,  &too_long);
@@ -1357,6 +1644,112 @@ static esp_err_t setup_post_handler(httpd_req_t *req) {
         }
     }
 
+    // Display / screensaver / multi-line (applied live, no restart).
+    if (form_get(buf, "display_mode", v, sizeof(v)) && v[0]) {
+        int dm = atoi(v);
+        if (dm >= DISPLAY_MODE_OFF && dm <= DISPLAY_MODE_ALL &&
+            (uint8_t)dm != updated.display_mode) {
+            updated.display_mode = (uint8_t)dm;
+            display_changed = true;
+        }
+    }
+    // Clock
+    if (form_get(buf, "clock_mode", v, sizeof(v)) && v[0]) {
+        int cm = atoi(v);
+        if (cm >= 0 && cm <= 1 && (uint8_t)cm != updated.clock_mode) {
+            updated.clock_mode = (uint8_t)cm;
+            display_changed = true;
+        }
+    }
+    if (form_get(buf, "clock_12h", v, sizeof(v)) && v[0]) {
+        uint8_t c = atoi(v) ? 1 : 0;
+        if (c != updated.clock_12h) { updated.clock_12h = c; display_changed = true; }
+    }
+    if (form_get(buf, "clock_date", v, sizeof(v)) && v[0]) {
+        uint8_t c = atoi(v) ? 1 : 0;
+        if (c != updated.clock_date) { updated.clock_date = c; display_changed = true; }
+    }
+    if (form_get(buf, "clock_offset_min", v, sizeof(v)) && v[0]) {
+        int off = atoi(v);
+        if (off >= -1440 && off <= 1440 && (int16_t)off != updated.clock_offset_min) {
+            updated.clock_offset_min = (int16_t)off;
+            display_changed = true;
+        }
+    }
+    if (form_get(buf, "ss_enabled", v, sizeof(v)) && v[0]) {
+        int e = atoi(v);
+        if ((e ? 1 : 0) != (int)updated.ss_enabled) { updated.ss_enabled = (uint8_t)(e ? 1 : 0); display_changed = true; }
+    }
+    if (form_get(buf, "ss_mode", v, sizeof(v)) && v[0]) {
+        int m = atoi(v);
+        if (m >= 0 && m <= 3 && (uint8_t)m != updated.ss_mode) { updated.ss_mode = (uint8_t)m; display_changed = true; }
+    }
+    if (form_get(buf, "ss_idle_s", v, sizeof(v)) && v[0]) {
+        int i = atoi(v);
+        if (i >= 0 && i <= 255 && (uint8_t)i != updated.ss_idle_s) { updated.ss_idle_s = (uint8_t)i; display_changed = true; }
+    }
+    if (form_get(buf, "ss_speed", v, sizeof(v)) && v[0]) {
+        int s = atoi(v);
+        if (s >= 0 && s <= 2 && (uint8_t)s != updated.ss_speed) { updated.ss_speed = (uint8_t)s; display_changed = true; }
+    }
+    if (form_get(buf, "ss_bright", v, sizeof(v)) && v[0]) {
+        int b = atoi(v);
+        if (b >= 0 && b <= 100 && (uint8_t)b != updated.ss_bright) { updated.ss_bright = (uint8_t)b; display_changed = true; }
+    }
+    if (form_get(buf, "line_count", v, sizeof(v)) && v[0]) {
+        int c = atoi(v);
+        if (c >= 1 && c <= 4 && (uint8_t)c != updated.line_count) { updated.line_count = (uint8_t)c; display_changed = true; }
+    }
+    // ss_mask from checkboxes ss_e0..ss_e6
+    {
+        uint8_t mask = 0;
+        bool any = false;
+        for (int e = 0; e < 7; e++) {
+            char key[8];
+            snprintf(key, sizeof(key), "ss_e%d", e);
+            if (form_get(buf, key, v, sizeof(v))) { any = true; if (v[0]) mask |= (1 << e); }
+        }
+        if (any && mask != updated.ss_mask) { updated.ss_mask = mask; display_changed = true; }
+    }
+    for (int i = 0; i < 4; i++) {
+        char key[16], val[96];
+        snprintf(key, sizeof(key), "ss_t%d", i);
+        if (form_get(buf, key, val, sizeof(val))) {
+            if (strlen(val) >= sizeof(updated.ss_text[i])) {
+                too_long = true;
+            } else if (strcmp(val, updated.ss_text[i]) != 0) {
+                strncpy(updated.ss_text[i], val, sizeof(updated.ss_text[i]) - 1);
+                updated.ss_text[i][sizeof(updated.ss_text[i]) - 1] = '\0';
+                display_changed = true;
+            }
+        }
+        snprintf(key, sizeof(key), "ln_s%d", i);
+        if (form_get(buf, key, v, sizeof(v)) && v[0]) {
+            int x = atoi(v);
+            if (x >= 0 && x <= 15 && (uint8_t)x != updated.line_src[i]) { updated.line_src[i] = (uint8_t)x; display_changed = true; }
+        }
+        snprintf(key, sizeof(key), "ln_sc%d", i);
+        if (form_get(buf, key, v, sizeof(v)) && v[0]) {
+            int x = atoi(v);
+            if (x >= 0 && x <= 4 && (uint8_t)x != updated.line_scale[i]) { updated.line_scale[i] = (uint8_t)x; display_changed = true; }
+        }
+        snprintf(key, sizeof(key), "ln_sp%d", i);
+        if (form_get(buf, key, v, sizeof(v)) && v[0]) {
+            int x = atoi(v);
+            if (x >= 1 && x <= 4 && (uint8_t)x != updated.line_span[i]) { updated.line_span[i] = (uint8_t)x; display_changed = true; }
+        }
+        snprintf(key, sizeof(key), "ln_al%d", i);
+        if (form_get(buf, key, v, sizeof(v)) && v[0]) {
+            int x = atoi(v);
+            if (x >= 0 && x <= 2 && (uint8_t)x != updated.line_align[i]) { updated.line_align[i] = (uint8_t)x; display_changed = true; }
+        }
+        snprintf(key, sizeof(key), "ln_sr%d", i);
+        if (form_get(buf, key, v, sizeof(v))) {
+            uint8_t nv = v[0] ? 1 : 0;
+            if (nv != updated.line_scroll[i]) { updated.line_scroll[i] = nv; display_changed = true; }
+        }
+    }
+
     // Audio backend: needs a fresh codec/I2S init, so this one restarts too.
     if (form_get(buf, "audio_out", v, sizeof(v)) && v[0]) {
         int ao = atoi(v);
@@ -1366,8 +1759,122 @@ static esp_err_t setup_post_handler(httpd_req_t *req) {
         }
     }
 
+    // ---- Display panel (moved here from Hardware -> Matrix) ----
+    bool matrix_restart = false;
+    if (form_get(buf, "matrix_type", v, sizeof(v)) && v[0]) {
+        int t = atoi(v);
+        if (t >= 0 && t <= 4 && (uint8_t)t != updated.matrix_type) {
+            updated.matrix_type = (uint8_t)t;
+            matrix_restart = true;
+        }
+    }
+    if (form_get(buf, "matrix_channels", v, sizeof(v)) && v[0]) {
+        int c = atoi(v);
+        if (c >= 0 && c <= 3 && (uint8_t)c != updated.matrix_channels) {
+            updated.matrix_channels = (uint8_t)c;
+            matrix_restart = true;
+        }
+    }
+    if (form_get(buf, "matrix_layout", v, sizeof(v)) && v[0]) {
+        int l = atoi(v);
+        if (l >= 0 && l <= 1 && (uint8_t)l != updated.matrix_layout) {
+            updated.matrix_layout = (uint8_t)l;
+            matrix_restart = true;
+        }
+    }
+    if (form_get(buf, "matrix_modules", v, sizeof(v)) && v[0]) {
+        int m = atoi(v);
+        if (m >= 1 && m <= 8 && (uint8_t)m != updated.matrix_modules) {
+            updated.matrix_modules = (uint8_t)m;
+            matrix_restart = true;
+        }
+    }
+    if (form_get(buf, "matrix_width", v, sizeof(v)) && v[0]) {
+        int w = atoi(v);
+        if (w >= 8 && w <= 128 && (uint16_t)w != updated.matrix_width) {
+            updated.matrix_width = (uint16_t)w;
+            matrix_restart = true;
+        }
+    }
+    if (form_get(buf, "matrix_height", v, sizeof(v)) && v[0]) {
+        int h = atoi(v);
+        if (h >= 8 && h <= 64 && (uint16_t)h != updated.matrix_height) {
+            updated.matrix_height = (uint16_t)h;
+            matrix_restart = true;
+        }
+    }
+    if (form_get(buf, "matrix_scan", v, sizeof(v)) && v[0]) {
+        int sc = atoi(v);
+        if (sc >= 0 && sc <= 4 && (uint8_t)sc != updated.matrix_scan) {
+            updated.matrix_scan = (uint8_t)sc;
+            matrix_restart = true;
+        }
+    }
+    if (form_get(buf, "matrix_pixel_aspect", v, sizeof(v)) && v[0]) {
+        int a = atoi(v);
+        if (a >= 0 && a <= 2 && (uint8_t)a != updated.matrix_pixel_aspect) {
+            updated.matrix_pixel_aspect = (uint8_t)a;
+            display_changed = true; // renderer reads it live
+        }
+    }
+    if (form_get(buf, "matrix_brightness", v, sizeof(v)) && v[0]) {
+        int br = atoi(v);
+        if (br >= 0 && br <= 100 && (uint8_t)br != updated.matrix_brightness) {
+            updated.matrix_brightness = (uint8_t)br;
+            display_changed = true;
+        }
+    }
+
+    // TFT/LVGL theme lives in the hardware blob (applied at boot).
+    if (form_get(buf, "ui_theme", v, sizeof(v)) && v[0]) {
+        int th = atoi(v);
+        if (th >= 0 && th <= 2) {
+            hardware_settings_t hwt;
+            config_manager_load_hw(&hwt);
+            if ((uint8_t)th != hwt.ui_theme) {
+                hwt.ui_theme = (uint8_t)th;
+                config_manager_save_hw(&hwt);
+                matrix_restart = true; // theme is applied by LVGL at boot
+            }
+        }
+    }
+
+    // ---- Ethernet interface + addressing (moved from Hardware -> Network) ----
+    bool net_changed = false;
+    bool net_invalid = false;
+#if defined(CONFIG_SIP_ETH_ENC28J60)
+    if (form_get(buf, "net_mode", v, sizeof(v)) && v[0]) {
+        int m = atoi(v);
+        if (m >= NETWORK_MODE_AUTO && m <= NETWORK_MODE_ETHERNET && (uint8_t)m != updated.network_mode) {
+            updated.network_mode = (uint8_t)m;
+            net_changed = true;
+        }
+    }
+    if (form_get(buf, "eth_dhcp", v, sizeof(v)) && v[0]) {
+        int d = atoi(v);
+        if (d >= 0 && d <= 1 && (uint8_t)d != updated.eth_dhcp) {
+            updated.eth_dhcp = (uint8_t)d;
+            net_changed = true;
+        }
+    }
+    apply_field(buf, "eth_ip",   updated.eth_ip,       sizeof(updated.eth_ip),       true, &net_changed, &too_long);
+    apply_field(buf, "eth_mask", updated.eth_netmask,  sizeof(updated.eth_netmask),  true, &net_changed, &too_long);
+    apply_field(buf, "eth_gw",   updated.eth_gw,       sizeof(updated.eth_gw),       true, &net_changed, &too_long);
+    apply_field(buf, "eth_dns",  updated.eth_dns,      sizeof(updated.eth_dns),      true, &net_changed, &too_long);
+    apply_field(buf, "eth_host", updated.eth_hostname, sizeof(updated.eth_hostname), true, &net_changed, &too_long);
+    if (updated.eth_dhcp == 0) {
+        if (updated.eth_ip[0] == '\0' || esp_ip4addr_aton(updated.eth_ip) == 0 ||
+            updated.eth_netmask[0] == '\0' || esp_ip4addr_aton(updated.eth_netmask) == 0 ||
+            (updated.eth_gw[0] && esp_ip4addr_aton(updated.eth_gw) == 0) ||
+            (updated.eth_dns[0] && esp_ip4addr_aton(updated.eth_dns) == 0)) {
+            net_invalid = true;
+        }
+    }
+#endif
+
     bool changed = wifi_changed || sip_changed || web_changed || mode_changed ||
-                   audio_changed || volume_changed;
+                   audio_changed || volume_changed || display_changed ||
+                   matrix_restart || net_changed;
 
     if (too_long) {
         page_t p;
@@ -1385,6 +1892,50 @@ static esp_err_t setup_post_handler(httpd_req_t *req) {
         free(buf);
         return ESP_OK;
     }
+
+    // Static Wi-Fi addressing must be a usable IPv4 configuration, otherwise
+    // the device would come up with 0.0.0.0 and no way back to the web UI.
+    if (updated.wifi_dhcp == 0) {
+        if (updated.wifi_ip[0] == '\0' || esp_ip4addr_aton(updated.wifi_ip) == 0 ||
+            updated.wifi_netmask[0] == '\0' || esp_ip4addr_aton(updated.wifi_netmask) == 0 ||
+            (updated.wifi_gw[0] && esp_ip4addr_aton(updated.wifi_gw) == 0) ||
+            (updated.wifi_dns[0] && esp_ip4addr_aton(updated.wifi_dns) == 0)) {
+            page_t ep;
+            pg_init(&ep, PAGE_MIN_CAP);
+            pg_head(&ep, "Settings - ESP32 SIP", 0);
+            pg_nav(&ep, "setup");
+            pg_puts(&ep, "<div class='card'><h1>Invalid IP configuration</h1>"
+                         "<p class='sub'>Static addressing needs a valid IPv4 address and "
+                         "netmask, and any gateway/DNS you enter must be valid dotted-quad "
+                         "addresses too (e.g. 192.168.1.42). Nothing was saved. Choose "
+                         "<b>DHCP</b> if you are not sure.</p>"
+                         "<a class='link' href='/setup?tab=network'>&laquo; Back to network"
+                         "</a></div>");
+            pg_device_footer(&ep);
+            pg_foot(&ep);
+            send_page(req, &ep);
+            free(buf);
+            return ESP_OK;
+        }
+    }
+
+    if (net_invalid) {
+        page_t ep;
+        pg_init(&ep, PAGE_MIN_CAP);
+        pg_head(&ep, "Settings - ESP32 SIP", 0);
+        pg_nav(&ep, "setup");
+        pg_puts(&ep, "<div class='card'><h1>Invalid Ethernet settings</h1>"
+                     "<p class='sub'>Static addressing needs a valid IPv4 address and netmask, "
+                     "and any gateway/DNS value you enter must be valid too. Nothing was saved. "
+                     "Choose <b>DHCP</b> if you are not sure.</p>"
+                     "<a class='link' href='/setup?tab=network'>&laquo; Back to network</a></div>");
+        pg_device_footer(&ep);
+        pg_foot(&ep);
+        send_page(req, &ep);
+        free(buf);
+        return ESP_OK;
+    }
+
     if (!changed) {
         page_t p;
         pg_init(&p, PAGE_MIN_CAP);
@@ -1407,13 +1958,18 @@ static esp_err_t setup_post_handler(httpd_req_t *req) {
         codec_set_volume(g_settings->volume);
         ESP_LOGI(TAG, "Volume set to %u%%", (unsigned)g_settings->volume);
     }
+    if (display_changed && g_matrix_display) {
+        // Brightness/aspect apply live (aspect is read by the renderer).
+        matrix_set_brightness(g_matrix_display, g_settings->matrix_brightness);
+    }
     ESP_LOGI(TAG, "Settings updated from web UI (sip_server='%s', sip_user='%s')",
              g_settings->sip_server, g_settings->sip_user);
 
     // Wi-Fi needs a fresh association, the audio backend a fresh codec/I2S init,
     // and the AP/setup path has no SIP client, so those still restart.
     // SIP account, device mode and web credentials apply in place.
-    bool need_reboot = wifi_changed || audio_changed || wifi_is_ap_mode();
+    bool need_reboot = wifi_changed || audio_changed || matrix_restart || net_changed ||
+                       wifi_is_ap_mode();
     bool sip_applied = false;
     if (!need_reboot && sip_changed && g_sip_client) {
         sip_applied = (sip_client_reload(g_sip_client) == ESP_OK);
@@ -1631,11 +2187,11 @@ static esp_err_t hardware_get_handler(httpd_req_t *req) {
     // ENC28J60 driver is compiled in, so a Wi-Fi-only build cannot be
     // configured into "Ethernet only" (which would strand it).
 #if defined(CONFIG_SIP_ETH_ENC28J60)
-    static const char *hw_ids[] = { "audio", "i2c", "display", "touch", "network", "theme" };
-    static const char *hw_labels[] = { "I2S Audio", "I2C Control", "Display (SPI)", "Touch", "Network", "Theme" };
+    static const char *hw_ids[] = { "audio", "i2c", "tft", "touch", "matrix", "eth" };
+    static const char *hw_labels[] = { "I2S Audio", "I2C Control", "TFT Display", "Touch", "LED Matrix", "Ethernet" };
 #else
-    static const char *hw_ids[] = { "audio", "i2c", "display", "touch", "theme" };
-    static const char *hw_labels[] = { "I2S Audio", "I2C Control", "Display (SPI)", "Touch", "Theme" };
+    static const char *hw_ids[] = { "audio", "i2c", "tft", "touch", "matrix" };
+    static const char *hw_labels[] = { "I2S Audio", "I2C Control", "TFT Display", "Touch", "LED Matrix" };
 #endif
     char tab[16];
     tab_value(req, tab, sizeof(tab));
@@ -1680,8 +2236,8 @@ static esp_err_t hardware_get_handler(httpd_req_t *req) {
     pg_puts(&p, "</div></div>");
     } // tab: i2c
 
-    if (strcmp(tab, "display") == 0) {
-    pg_puts(&p, "<div class='card col-12'><div class='card-title'>Display (SPI)</div>"
+    if (strcmp(tab, "tft") == 0) {
+    pg_puts(&p, "<div class='card col-12'><div class='card-title'>TFT display (SPI)</div>"
                 "<p class='hint' style='margin:0 0 12px'>SPI bus for the ST7789, ILI9341 or "
                 "GC9A01 panel.</p>"
                 "<div class='fields pins'>");
@@ -1696,7 +2252,7 @@ static esp_err_t hardware_get_handler(httpd_req_t *req) {
     hw_pin_field(&p, "tft_rst", "Reset (RST)", hw.pin_tft_rst,
                  "Reset line of the panel; -1 if tied to EN.");
     pg_puts(&p, "</div></div>");
-    } // tab: display
+    } // tab: tft
 
     if (strcmp(tab, "touch") == 0) {
     pg_puts(&p, "<div class='card col-12'><div class='card-title'>Touch</div>"
@@ -1711,32 +2267,14 @@ static esp_err_t hardware_get_handler(httpd_req_t *req) {
     } // tab: touch
 
 #if defined(CONFIG_SIP_ETH_ENC28J60)
-    if (strcmp(tab, "network") == 0) {
-    static const char *net_modes[] = {
-        "Auto - prefer Ethernet, fall back to Wi-Fi",
-        "Wi-Fi only",
-        "Ethernet only (no Wi-Fi station)",
-    };
-    static const char *dhcp_modes[] = { "Static IP", "DHCP (automatic)" };
-    pg_puts(&p, "<div class='card col-12'><div class='card-title'>Network interface</div>"
-                "<p class='hint' style='margin:0 0 12px'>How this phone reaches the LAN. "
-                "Changing this restarts the device.</p><div class='fields'>");
-    field_select(&p, "net_mode", "Interface", net_modes, 3, g_settings->network_mode,
-                 "<b>Auto</b> uses the ENC28J60 when a cable is plugged in and otherwise Wi-Fi. "
-                 "<b>Wi-Fi only</b> ignores the wired module. <b>Ethernet only</b> never starts "
-                 "the Wi-Fi station (use with a fixed address).");
-    field_select(&p, "eth_dhcp", "Addressing", dhcp_modes, 2, g_settings->eth_dhcp,
-                 "DHCP asks the router for an address. Static uses the four fields below "
-                 "(Ethernet only; ignored on DHCP).");
-    field_text(&p, "eth_ip",   "Static IP", g_settings->eth_ip,      "192.168.1.50",   "text", 15, NULL);
-    field_text(&p, "eth_mask", "Netmask",   g_settings->eth_netmask, "255.255.255.0",  "text", 15, NULL);
-    field_text(&p, "eth_gw",   "Gateway",   g_settings->eth_gw,      "192.168.1.1",    "text", 15, NULL);
-    field_text(&p, "eth_dns",  "DNS server", g_settings->eth_dns,    "192.168.1.1",    "text", 15, NULL);
-    field_text(&p, "eth_host", "Hostname",  g_settings->eth_hostname, ETH_HOSTNAME_DEFAULT, "text", 31,
-               "Name advertised to the router (DHCP only).");
-    pg_puts(&p, "</div></div>");
-
+    if (strcmp(tab, "eth") == 0) {
     pg_puts(&p, "<div class='card col-12'><div class='card-title'>ENC28J60 pins</div>"
+                "<p class='hint' style='margin:0 0 12px'>Wiring only. The interface mode and "
+                "addressing are under <a class='link' href='/setup?tab=network'>Settings &rarr; "
+                "Network</a>.</p>"
+                "<p class='hint' style='margin:0 0 12px'>INT is required because the driver is "
+                "interrupt-driven; RST may be -1 if the module's reset is tied to VCC. "
+                "SCK/MOSI/MISO sit on a dedicated SPI bus, so leave them -1 when using Wi-Fi.</p>"
                 "<p class='hint' style='margin:0 0 12px'>Wiring of the ENC28J60 SPI Ethernet "
                 "module. INT is required because the driver is interrupt-driven; RST may be -1 "
                 "if the module's reset is tied to VCC. SCK/MOSI/MISO sit on a dedicated SPI bus, "
@@ -1750,19 +2288,83 @@ static esp_err_t hardware_get_handler(httpd_req_t *req) {
     hw_pin_field(&p, "eth_miso", "SPI MISO", hw.pin_eth_miso, NULL);
     hw_pin_field(&p, "eth_mosi", "SPI MOSI", hw.pin_eth_mosi, NULL);
     pg_puts(&p, "</div></div>");
-    } // tab: network
+    } // tab: eth
 #endif
 
-    if (strcmp(tab, "theme") == 0) {
-    pg_puts(&p, "<div class='card col-12'><div class='card-title'>Display theme</div>"
-                "<p class='hint' style='margin:0 0 12px'>Look of the on-device screen. The theme "
-                "is drawn by LVGL and applied after the restart.</p><div class='fields'>");
-    static const char *themes[] = { "Voice Assistant", "Mobile OS", "Smart Speaker" };
-    field_select(&p, "ui_theme", "Theme", themes, 3, hw.ui_theme,
-                 "Voice Assistant shows a clock and a glowing orb, Mobile OS looks like a phone "
-                 "call screen, Smart Speaker fills the screen with a neon ring.");
-    pg_puts(&p, "</div></div>"); // .fields .card
-    } // tab: theme
+    if (strcmp(tab, "matrix") == 0) {
+    hardware_settings_t hw2;
+    config_manager_load_hw(&hw2);
+    app_settings_t mxset;
+    config_manager_load(&mxset);
+
+    pg_puts(&p, "<div class='card col-12'><div class='card-title'>LED matrix wiring</div>"
+                "<p class='hint' style='margin:0 0 12px'>GPIO wiring only. The panel <b>type, "
+                "size, scan, brightness</b> and its <b>content</b> are under "
+                "<a class='link' href='/setup?tab=display'>Settings &rarr; Display</a> and "
+                "<a class='link' href='/setup?tab=screen'>Screen</a>. Blank keeps the stored "
+                "value; -1 means not wired.</p></div>");
+
+    if (mxset.matrix_type == MATRIX_TYPE_MAX7219) {
+        pg_puts(&p, "<div class='card col-12'><div class='card-title'>MAX7219 pins (3)</div>"
+                    "<p class='hint' style='margin:0 0 12px'>DIN / CLK / CS of the 8x8 chain. "
+                    "Shared with the keypad rows on S3 - move them for dual use.</p>"
+                    "<div class='fields pins'>");
+        hw_pin_field(&p, "mx_din", "Data (DIN)", hw2.pin_mx_din, "Chain input.");
+        hw_pin_field(&p, "mx_clk", "Clock (CLK)", hw2.pin_mx_mclk, NULL);
+        hw_pin_field(&p, "mx_cs", "Chip select (CS)", hw2.pin_mx_cs, "Latch line.");
+        pg_puts(&p, "</div></div>");
+    } else if (mxset.matrix_type == MATRIX_TYPE_HUB12 ||
+               mxset.matrix_type == MATRIX_TYPE_HUB75) {
+        bool hub75 = (mxset.matrix_type == MATRIX_TYPE_HUB75);
+        pg_printf(&p, "<div class='card col-12'><div class='card-title'>%s pins (%d)</div>"
+                      "<p class='hint' style='margin:0 0 12px'>%s</p><div class='fields pins'>",
+                  hub75 ? "HUB75" : "HUB12", hub75 ? 14 : 12,
+                  hub75 ? "RGB data (R1..B2), address A-E, CLK/LAT/OE for a 64x32 panel."
+                         : "RGB data (R1..B2), address A/B for 1/4 scan, CLK/LAT/OE for a "
+                           "32x16 panel. C/D/E are unused.");
+        hw_pin_field(&p, "mx_r1", "R1", hw2.pin_mx_r1, NULL);
+        hw_pin_field(&p, "mx_g1", "G1", hw2.pin_mx_g1, NULL);
+        hw_pin_field(&p, "mx_b1", "B1", hw2.pin_mx_b1, NULL);
+        hw_pin_field(&p, "mx_r2", "R2", hw2.pin_mx_r2, NULL);
+        hw_pin_field(&p, "mx_g2", "G2", hw2.pin_mx_g2, NULL);
+        hw_pin_field(&p, "mx_b2", "B2", hw2.pin_mx_b2, NULL);
+        hw_pin_field(&p, "mx_a", "A", hw2.pin_mx_a, NULL);
+        hw_pin_field(&p, "mx_b", "B", hw2.pin_mx_b, NULL);
+        if (hub75) {
+            hw_pin_field(&p, "mx_c", "C", hw2.pin_mx_c, NULL);
+            hw_pin_field(&p, "mx_d", "D", hw2.pin_mx_d, NULL);
+            hw_pin_field(&p, "mx_e", "E", hw2.pin_mx_e, "-1 on 1/16-scan panels.");
+        }
+        hw_pin_field(&p, "mx_clk", "CLK", hw2.pin_mx_clk, NULL);
+        hw_pin_field(&p, "mx_lat", "LAT", hw2.pin_mx_lat, NULL);
+        hw_pin_field(&p, "mx_oe", "OE", hw2.pin_mx_oe, "Active low.");
+        pg_puts(&p, "</div></div>");
+    } else {
+        pg_puts(&p, "<div class='card col-12'><p class='sub' style='margin:0'>No LED panel is "
+                    "selected, so there are no matrix pins to configure. Choose a panel type "
+                    "under <a class='link' href='/setup?tab=display'>Settings &rarr; Display</a>."
+                    "</p></div>");
+    }
+
+    pg_puts(&p, "<div class='col-12'><div class='savebar'>"
+                "<button class='btn primary' type='submit'>Save matrix pins</button>"
+                "<span class='hint'>Pin changes restart the device.</span></div></div>");
+    pg_puts(&p, "</div></form>"); // .grid, form
+
+    // Standalone form (outside the pin form) so the button is valid HTML.
+    pg_puts(&p, "<div class='card col-12'><div class='card-title'>Wiring test</div>"
+                "<p class='hint' style='margin:0 0 12px'>Draws a border, checkerboard and "
+                "<b>TEST</b> on the panel for a few seconds to confirm data, scan and "
+                "orientation.</p>"
+                "<form method='POST' action='/matrix_test'>"
+                "<button class='btn' type='submit' style='max-width:220px'>Show test pattern"
+                "</button></form></div>");
+
+    pg_device_footer(&p);
+    pg_foot(&p);
+    send_page(req, &p);
+    return ESP_OK;
+    } // tab: matrix
 
     pg_puts(&p, "<div class='col-12'><div class='savebar'>"
                 "<button class='btn primary' type='submit'>Save GPIO map &amp; restart</button>"
@@ -1795,6 +2397,7 @@ static esp_err_t hardware_post_handler(httpd_req_t *req) {
 
     char v[32];
     bool changed = false;
+    bool live_only = false;   // matrix brightness/aspect applied without restart
     struct { const char *key; int8_t *dst; } pin_map[] = {
         { "bck",       &hw.pin_i2s_bck   },
         { "ws",        &hw.pin_i2s_ws    },
@@ -1817,6 +2420,23 @@ static esp_err_t hardware_post_handler(httpd_req_t *req) {
         { "eth_sck",   &hw.pin_eth_sck   },
         { "eth_miso",  &hw.pin_eth_miso  },
         { "eth_mosi",  &hw.pin_eth_mosi  },
+        { "mx_r1",     &hw.pin_mx_r1     },
+        { "mx_g1",     &hw.pin_mx_g1     },
+        { "mx_b1",     &hw.pin_mx_b1     },
+        { "mx_r2",     &hw.pin_mx_r2     },
+        { "mx_g2",     &hw.pin_mx_g2     },
+        { "mx_b2",     &hw.pin_mx_b2     },
+        { "mx_a",      &hw.pin_mx_a      },
+        { "mx_b",      &hw.pin_mx_b      },
+        { "mx_c",      &hw.pin_mx_c      },
+        { "mx_d",      &hw.pin_mx_d      },
+        { "mx_e",      &hw.pin_mx_e      },
+        { "mx_clk",    &hw.pin_mx_clk    },
+        { "mx_lat",    &hw.pin_mx_lat    },
+        { "mx_oe",     &hw.pin_mx_oe     },
+        { "mx_din",    &hw.pin_mx_din    },
+        { "mx_mclk",   &hw.pin_mx_mclk   },
+        { "mx_cs",     &hw.pin_mx_cs     },
     };
     // A cleared field must mean "leave it alone" - never atoi("") == pin 0,
     // which would land on a strapping pin.
@@ -1864,6 +2484,76 @@ static esp_err_t hardware_post_handler(httpd_req_t *req) {
         apply_field(buf, "eth_gw",   updated.eth_gw,       sizeof(updated.eth_gw),       true, &net_changed, &net_too_long);
         apply_field(buf, "eth_dns",  updated.eth_dns,      sizeof(updated.eth_dns),      true, &net_changed, &net_too_long);
         apply_field(buf, "eth_host", updated.eth_hostname, sizeof(updated.eth_hostname), true, &net_changed, &net_too_long);
+
+        // Matrix display settings (stored in app_settings, not the hardware blob).
+        bool mx_changed = false;
+        bool mx_live = false;
+        if (form_get(buf, "matrix_type", v, sizeof(v)) && v[0]) {
+            int t = atoi(v);
+            if (t >= 0 && t <= 4 && (uint8_t)t != updated.matrix_type) {
+                updated.matrix_type = (uint8_t)t; mx_changed = true;
+            }
+        }
+        if (form_get(buf, "matrix_channels", v, sizeof(v)) && v[0]) {
+            int c = atoi(v);
+            if (c >= 0 && c <= 3 && (uint8_t)c != updated.matrix_channels) {
+                updated.matrix_channels = (uint8_t)c; mx_changed = true;
+            }
+        }
+        if (form_get(buf, "matrix_layout", v, sizeof(v)) && v[0]) {
+            int l = atoi(v);
+            if (l >= 0 && l <= 1 && (uint8_t)l != updated.matrix_layout) {
+                updated.matrix_layout = (uint8_t)l; mx_changed = true;
+            }
+        }
+        if (form_get(buf, "matrix_modules", v, sizeof(v)) && v[0]) {
+            int m = atoi(v);
+            if (m >= 1 && m <= 8 && (uint8_t)m != updated.matrix_modules) {
+                updated.matrix_modules = (uint8_t)m; mx_changed = true;
+            }
+        }
+        if (form_get(buf, "matrix_width", v, sizeof(v)) && v[0]) {
+            int w = atoi(v);
+            if (w >= 8 && w <= 128 && (uint16_t)w != updated.matrix_width) {
+                updated.matrix_width = (uint16_t)w; mx_changed = true;
+            }
+        }
+        if (form_get(buf, "matrix_height", v, sizeof(v)) && v[0]) {
+            int h = atoi(v);
+            if (h >= 8 && h <= 64 && (uint16_t)h != updated.matrix_height) {
+                updated.matrix_height = (uint16_t)h; mx_changed = true;
+            }
+        }
+        if (form_get(buf, "matrix_scan", v, sizeof(v)) && v[0]) {
+            int s = atoi(v);
+            if (s >= 0 && s <= 4 && (uint8_t)s != updated.matrix_scan) {
+                updated.matrix_scan = (uint8_t)s; mx_changed = true;
+            }
+        }
+        if (form_get(buf, "matrix_pixel_aspect", v, sizeof(v)) && v[0]) {
+            int a = atoi(v);
+            if (a >= 0 && a <= 2 && (uint8_t)a != updated.matrix_pixel_aspect) {
+                updated.matrix_pixel_aspect = (uint8_t)a;
+                mx_live = true; // renderer reads it every tick, no restart
+            }
+        }
+        if (form_get(buf, "matrix_brightness", v, sizeof(v)) && v[0]) {
+            int b = atoi(v);
+            if (b >= 0 && b <= 100 && (uint8_t)b != updated.matrix_brightness) {
+                updated.matrix_brightness = (uint8_t)b;
+                mx_live = true; // applied via matrix_set_brightness below
+            }
+        }
+        if (mx_changed || mx_live) {
+            *g_settings = updated;
+            config_manager_save(g_settings);
+            if (mx_live && g_matrix_display) {
+                matrix_set_brightness(g_matrix_display, updated.matrix_brightness);
+                ESP_LOGI(TAG, "Matrix brightness -> %u%%", (unsigned)updated.matrix_brightness);
+            }
+            if (mx_changed) changed = true;
+            else live_only = true;
+        }
         // Static addressing must be a usable IPv4 configuration: a malformed
         // value would otherwise be applied as 0.0.0.0 with DHCP already stopped.
 #if defined(CONFIG_SIP_ETH_ENC28J60)
@@ -1904,6 +2594,12 @@ static esp_err_t hardware_post_handler(httpd_req_t *req) {
 
     config_manager_save_hw(&hw);
 
+    // Surface (but do not block) a pin that the active matrix backend shares
+    // with another configured peripheral.
+    char pin_warn[128] = {0};
+    bool pin_conflict = g_settings &&
+        matrix_pin_conflict(&hw, g_settings->matrix_type, pin_warn, sizeof(pin_warn));
+
     page_t p;
     pg_init(&p, PAGE_MIN_CAP);
     pg_head(&p, "Hardware - ESP32 SIP", 0);
@@ -1914,11 +2610,21 @@ static esp_err_t hardware_post_handler(httpd_req_t *req) {
                     "<p class='sub'>The device is restarting so the audio, display and touch "
                     "drivers re-initialise on the new pins.</p>"
                     "<div class='ok'>Rebooting...</div>");
+    } else if (live_only) {
+        pg_puts(&p, "Applied live</h1>"
+                    "<p class='sub'>Brightness and pixel aspect take effect immediately; "
+                    "nothing else changed, so the device keeps running.</p>"
+                    "<div class='ok'>No restart required</div>");
     } else {
         pg_puts(&p, "No changes</h1>"
                     "<p class='sub'>The GPIO map already matched what you submitted, so nothing "
                     "was written and the device keeps running.</p>"
                     "<div class='ok'>No restart required</div>");
+    }
+    if (pin_conflict) {
+        pg_puts(&p, "<div class='warn' style='margin-top:12px'>Pin conflict: ");
+        pg_escape(&p, pin_warn);
+        pg_puts(&p, " Change one of them on the Matrix tab.</div>");
     }
     pg_puts(&p, "<a class='link' href='/hardware' style='display:inline-block;margin-top:12px'>"
                 "&laquo; Back to hardware</a></div>");
@@ -1937,6 +2643,85 @@ static esp_err_t hardware_post_handler(httpd_req_t *req) {
 // =====================================================================
 //  HTTP server
 // =====================================================================
+
+// Report the first pin claimed by both the active matrix backend and another
+// peripheral. Non-blocking: a save still succeeds, the page shows a warning.
+static bool matrix_pin_conflict(const hardware_settings_t *hw, uint8_t matrix_type,
+                                char *out, size_t out_len) {
+    typedef struct { const char *name; int8_t pin; } pe_t;
+    if (!hw || !out || out_len == 0) return false;
+    out[0] = '\0';
+
+    pe_t mx[14];
+    int n = 0;
+    if (matrix_type == MATRIX_TYPE_MAX7219) {
+        mx[n++] = (pe_t){"DIN", hw->pin_mx_din};
+        mx[n++] = (pe_t){"CLK", hw->pin_mx_mclk};
+        mx[n++] = (pe_t){"CS", hw->pin_mx_cs};
+    } else if (matrix_type == MATRIX_TYPE_HUB12 || matrix_type == MATRIX_TYPE_HUB75) {
+        mx[n++] = (pe_t){"R1", hw->pin_mx_r1};
+        mx[n++] = (pe_t){"G1", hw->pin_mx_g1};
+        mx[n++] = (pe_t){"B1", hw->pin_mx_b1};
+        mx[n++] = (pe_t){"R2", hw->pin_mx_r2};
+        mx[n++] = (pe_t){"G2", hw->pin_mx_g2};
+        mx[n++] = (pe_t){"B2", hw->pin_mx_b2};
+        mx[n++] = (pe_t){"A", hw->pin_mx_a};
+        mx[n++] = (pe_t){"B", hw->pin_mx_b};
+        if (matrix_type == MATRIX_TYPE_HUB75) {
+            mx[n++] = (pe_t){"C", hw->pin_mx_c};
+            mx[n++] = (pe_t){"D", hw->pin_mx_d};
+            mx[n++] = (pe_t){"E", hw->pin_mx_e};
+        }
+        mx[n++] = (pe_t){"CLK", hw->pin_mx_clk};
+        mx[n++] = (pe_t){"LAT", hw->pin_mx_lat};
+        mx[n++] = (pe_t){"OE", hw->pin_mx_oe};
+    } else {
+        return false;
+    }
+
+    pe_t others[] = {
+        {"I2S BCLK", hw->pin_i2s_bck}, {"I2S WS", hw->pin_i2s_ws},
+        {"I2S DOUT", hw->pin_i2s_dout}, {"I2S DIN", hw->pin_i2s_din},
+        {"I2S MCLK", hw->pin_i2s_mclk},
+        {"I2C SDA", hw->pin_i2c_sda}, {"I2C SCL", hw->pin_i2c_scl},
+        {"SPI MOSI", hw->pin_spi_mosi}, {"SPI MISO", hw->pin_spi_miso},
+        {"SPI CLK", hw->pin_spi_clk},
+        {"TFT CS", hw->pin_tft_cs}, {"TFT DC", hw->pin_tft_dc}, {"TFT RST", hw->pin_tft_rst},
+        {"TOUCH CS", hw->pin_touch_cs}, {"TOUCH IRQ", hw->pin_touch_irq},
+        {"ETH CS", hw->pin_eth_cs}, {"ETH INT", hw->pin_eth_int}, {"ETH RST", hw->pin_eth_rst},
+        {"ETH SCK", hw->pin_eth_sck}, {"ETH MISO", hw->pin_eth_miso}, {"ETH MOSI", hw->pin_eth_mosi},
+        {"BUTTON", BUTTON_GPIO},
+    };
+
+    for (int i = 0; i < n; i++) {
+        if (mx[i].pin < 0) continue;
+        for (size_t j = 0; j < sizeof(others) / sizeof(others[0]); j++) {
+            if (others[j].pin == mx[i].pin) {
+                snprintf(out, out_len, "Matrix %s and %s both use GPIO %d.",
+                         mx[i].name, others[j].name, mx[i].pin);
+                return true;
+            }
+        }
+        for (int k = 0; k < i; k++) {
+            if (mx[k].pin == mx[i].pin) {
+                snprintf(out, out_len, "Matrix %s and %s both use GPIO %d.",
+                         mx[i].name, mx[k].name, mx[i].pin);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Draw a wiring test pattern on the LED matrix for a few seconds.
+static esp_err_t matrix_test_post_handler(httpd_req_t *req) {
+    if (!require_login(req)) return ESP_OK;
+    if (g_matrix_display) {
+        matrix_status_show_test_pattern(6);
+    }
+    redirect_to(req, "/hardware?tab=matrix");
+    return ESP_OK;
+}
 
 // Quick network-interface switch from the status page. Persists the choice and
 // restarts so the new interface is brought up cleanly.
@@ -2213,9 +2998,9 @@ static void start_webserver(void) {
     config.uri_match_fn = httpd_uri_match_wildcard;
     config.max_uri_handlers = 20;
     config.lru_purge_enable = true;
-    // Handlers call into the SIP client, which only queues requests; keep some
-    // headroom anyway (the stock 4 KB is tight once page building is involved).
-    config.stack_size = 6144;
+    // Handlers build large pages (Display tab has 4x6 selects + tables); 6 KB
+    // overflowed the stack on /setup?tab=display. 8 KB is safe.
+    config.stack_size = 8192;
 
     if (httpd_start(&server, &config) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start HTTP server");
@@ -2232,6 +3017,7 @@ static void start_webserver(void) {
         { .uri = "/hardware",    .method = HTTP_GET,  .handler = hardware_get_handler },
         { .uri = "/hardware",    .method = HTTP_POST, .handler = hardware_post_handler },
         { .uri = "/volume",      .method = HTTP_POST, .handler = volume_post_handler  },
+        { .uri = "/matrix_test", .method = HTTP_POST, .handler = matrix_test_post_handler },
         { .uri = "/netmode",     .method = HTTP_POST, .handler = netmode_post_handler },
         { .uri = "/call",        .method = HTTP_POST, .handler = action_post_handler  },
         { .uri = "/answer",      .method = HTTP_POST, .handler = action_post_handler  },

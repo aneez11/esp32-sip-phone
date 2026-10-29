@@ -6,6 +6,12 @@
 typedef struct {
     char wifi_ssid[32];
     char wifi_password[64];
+    // Wi-Fi addressing: 1 = DHCP (default), 0 = static
+    uint8_t wifi_dhcp;
+    char wifi_ip[16];
+    char wifi_netmask[16];
+    char wifi_gw[16];
+    char wifi_dns[16];
     char sip_server[64];
     char sip_user[64];
     char sip_password[64];
@@ -41,6 +47,28 @@ typedef struct {
     uint8_t matrix_channels;         // MATRIX_COLOR_*
     uint8_t matrix_layout;           // MATRIX_LAYOUT_*
     uint8_t matrix_brightness;       // 0-100
+    uint8_t matrix_scan;             // 0=auto 1=1/4 2=1/8 3=1/16 4=1/32 (HUB only)
+    uint8_t matrix_pixel_aspect;     // 0=1:1 1=2:1 wide 2=1:2 tall
+    // Multi-line layout (up to 4 slots)
+    uint8_t line_count;              // 1-4, capped by panel height
+    uint8_t line_src[4];             // data source enum
+    uint8_t line_scale[4];           // 0=auto, 1-4
+    uint8_t line_span[4];            // 1-4 rows
+    uint8_t line_align[4];           // 0=left,1=centre,2=right
+    uint8_t line_scroll[4];          // bool
+    // Screensaver
+    uint8_t ss_enabled;              // bool
+    uint8_t ss_mode;                 // 0=off,1=single,2=rotate,3=random
+    uint8_t ss_mask;                 // bitmask of enabled effects
+    char    ss_text[4][64];          // custom strings (scroll saver / Custom 1-4 slots)
+    uint8_t ss_speed;                // 0=slow,1=normal,2=fast
+    uint8_t ss_idle_s;               // 0=disabled
+    uint8_t ss_bright;               // 0=follow main, else 0-100
+    // Clock (idle screen + "Time"/"Date" line sources + Clock saver)
+    uint8_t clock_mode;              // 0=off, 1=show clock instead of READY when idle
+    uint8_t clock_12h;               // 0=24-hour, 1=12-hour
+    uint8_t clock_date;              // 1=show the date under the time on tall panels
+    int16_t clock_offset_min;        // minutes added to the system clock (-1440..1440)
     uint8_t matrix_modules;          // MAX7219 chain length
     uint16_t matrix_width;           // panel width (HUB75/preview)
     uint16_t matrix_height;          // panel height

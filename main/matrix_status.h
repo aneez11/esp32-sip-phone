@@ -33,6 +33,10 @@ esp_err_t matrix_status_start(matrix_display_handle_t matrix,
                               sip_client_handle_t *sip_ref,
                               app_settings_t *settings);
 
+// Draw a wiring test pattern (border + checkerboard + "TEST") for `seconds`
+// and suspend normal status rendering while it is on screen.
+void matrix_status_show_test_pattern(int seconds);
+
 #ifdef __cplusplus
 }
 #endif

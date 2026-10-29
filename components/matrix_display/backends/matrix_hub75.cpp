@@ -23,6 +23,8 @@ struct hub75_ctx_t {
     uint16_t height = 32;
     // esphome/esp-hub75 expects RGB888_32 (0x00RRGGBB) by default.
     uint32_t *argb = nullptr;
+    const uint8_t *fb = nullptr;
+    size_t fb_len = 0;
 };
 
 static void apply_pins(const matrix_cfg_t *cfg, Hub75Config &c)
@@ -47,18 +49,21 @@ static void apply_pins(const matrix_cfg_t *cfg, Hub75Config &c)
 
 static esp_err_t hub75_init(const matrix_cfg_t *cfg, void **ctx, uint8_t *fb, size_t fb_len)
 {
-    (void)fb; (void)fb_len;
     hub75_ctx_t *c = new (std::nothrow) hub75_ctx_t();
     if (!c) return ESP_ERR_NO_MEM;
 
     c->width = cfg->width;
     c->height = cfg->height;
+    c->fb = fb;
+    c->fb_len = fb_len;
 
     Hub75Config conf = {};
     conf.panel_width  = cfg->width;
     conf.panel_height = cfg->height;
     // 1/16-scan 64x32 panels are the "standard two scan" wiring.
-    conf.scan_wiring = Hub75ScanWiring::STANDARD_TWO_SCAN;
+    if (cfg->scan == 1) conf.scan_wiring = Hub75ScanWiring::STANDARD_FOUR_SCAN;
+    else if (cfg->scan == 2 || cfg->scan == 3) conf.scan_wiring = Hub75ScanWiring::STANDARD_TWO_SCAN;
+    else conf.scan_wiring = (cfg->height <= 16) ? Hub75ScanWiring::STANDARD_FOUR_SCAN : Hub75ScanWiring::STANDARD_TWO_SCAN;
     // Most panels use the generic driver; FM6126A is the common alternative.
     conf.shift_driver = Hub75ShiftDriver::GENERIC;
     conf.led_color = (cfg->color == MX_RGB) ? Hub75Color::RGB : Hub75Color::MONOCHROME;
@@ -101,13 +106,17 @@ static void hub75_deinit(void *ctx)
 static void hub75_flush(void *ctx)
 {
     hub75_ctx_t *c = (hub75_ctx_t *)ctx;
-    if (!c || !c->driver) return;
-    // The core owns an RGB888 framebuffer; convert to RGB888_32 and blit.
-    // Note: flush() is called with the display mutex held, but the core's fb
-    // pointer is not passed here, so the backend keeps its own copy updated by
-    // the core via matrix_hub75_set_fb(). For M1 we render from the core fb at
-    // flush time through the driver's bulk draw API.
-    c->driver->flush(); // present the current framebuffer
+    if (!c || !c->driver || !c->fb || !c->argb) return;
+    // The core owns an RGB888 framebuffer; convert to RGB888_32 so the
+    // driver can blit it. c->fb/fb_len are captured at init (the core's fb
+    // does not move), so this conversion always reflects the latest frame.
+    for (size_t i = 0; i < (size_t)c->width * c->height; i++) {
+        const uint8_t *p = c->fb + i * 3;
+        c->argb[i] = ((uint32_t)p[0] << 16) | ((uint32_t)p[1] << 8) | p[2];
+    }
+    // Present. The exact blit call depends on the driver version; flush()
+    // presents whatever framebuffer the driver currently holds.
+    c->driver->flush();
 }
 
 static void hub75_set_brightness(void *ctx, uint8_t percent)

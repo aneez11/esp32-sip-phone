@@ -51,22 +51,32 @@ static void fb_clear(struct matrix_display_s *d)
     memset(d->fb, 0, (size_t)d->cfg.width * d->cfg.height * 3);
 }
 
-// Blit one glyph (scaled) at (x,y); returns advance width in pixels.
-static int draw_glyph(struct matrix_display_s *d, int x, int y, char c,
-                      uint8_t scale, uint32_t rgb)
+// Blit one glyph (scaled, horizontally stretched by x_mul) at (x,y);
+// returns advance width in pixels.
+static int draw_glyph_x(struct matrix_display_s *d, int x, int y, char c,
+                        uint8_t scale, uint32_t rgb, uint8_t x_mul)
 {
+    if (x_mul < 1) x_mul = 1;
+    if (x_mul > 4) x_mul = 4;
     const uint8_t *g = font5x7_glyph(c);
+    int gw = scale * x_mul;
     for (int col = 0; col < FONT5X7_W; col++) {
         uint8_t bits = g[col];
         for (int row = 0; row < FONT5X7_H; row++) {
             if (bits & (1 << row)) {
-                for (int sx = 0; sx < scale; sx++)
+                for (int sx = 0; sx < gw; sx++)
                     for (int sy = 0; sy < scale; sy++)
-                        fb_pixel(d, x + col * scale + sx, y + row * scale + sy, rgb);
+                        fb_pixel(d, x + col * gw + sx, y + row * scale + sy, rgb);
             }
         }
     }
-    return FONT5X7_W * scale + scale; // 1px (scaled) letter spacing
+    return FONT5X7_W * gw + scale; // 1px (scaled) letter spacing
+}
+
+static int draw_glyph(struct matrix_display_s *d, int x, int y, char c,
+                      uint8_t scale, uint32_t rgb)
+{
+    return draw_glyph_x(d, x, y, c, scale, rgb, 1);
 }
 
 // ---- public API ----
@@ -167,6 +177,16 @@ void matrix_set_brightness(matrix_display_handle_t h, uint8_t percent)
 int matrix_draw_text(matrix_display_handle_t h, int x, int y,
                      const char *text, uint8_t scale, uint32_t rgb)
 {
+    return matrix_draw_text_stretch(h, x, y, text, scale, rgb, 1);
+}
+
+// Same as matrix_draw_text but each glyph column is repeated x_mul times, so
+// text looks correct on panels whose pixels are wider than they are tall
+// (pixel aspect ratio 2:1 etc.).
+int matrix_draw_text_stretch(matrix_display_handle_t h, int x, int y,
+                             const char *text, uint8_t scale, uint32_t rgb,
+                             uint8_t x_mul)
+{
     struct matrix_display_s *d = h;
     if (!d || !text) return 0;
     if (scale < 1) scale = 1;
@@ -175,9 +195,20 @@ int matrix_draw_text(matrix_display_handle_t h, int x, int y,
     xSemaphoreTake(d->lock, portMAX_DELAY);
     int start = x;
     for (const char *s = text; *s; s++)
-        x += draw_glyph(d, x, y, *s, scale, rgb);
+        x += draw_glyph_x(d, x, y, *s, scale, rgb, x_mul);
     xSemaphoreGive(d->lock);
     return x - start;
+}
+
+int matrix_text_width_stretch(const char *text, uint8_t scale, uint8_t x_mul)
+{
+    if (!text || !*text) return 0;
+    if (scale < 1) scale = 1;
+    if (scale > 4) scale = 4;
+    if (x_mul < 1) x_mul = 1;
+    if (x_mul > 4) x_mul = 4;
+    int gw = FONT5X7_W * scale * x_mul;
+    return (int)strlen(text) * (gw + scale) - scale;
 }
 
 void matrix_draw_text_center(matrix_display_handle_t h, int y,

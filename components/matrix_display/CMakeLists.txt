@@ -5,6 +5,7 @@ set(MATRIX_SRCS
     "backends/matrix_preview.c"
     "backends/matrix_max7219.c"
     "backends/matrix_hub75.cpp"
+    "backends/matrix_hub12.cpp"
 )
 
 # The MAX7219 and HUB75 backends are compiled in so a runtime selection can

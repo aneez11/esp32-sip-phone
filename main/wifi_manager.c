@@ -1,5 +1,7 @@
 #include "wifi_manager.h"
 #include "app_config.h"
+#include "esp_netif.h"
+#include "esp_netif_ip_addr.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -166,6 +168,37 @@ void wifi_init_sta(EventGroupHandle_t wifi_event_group, const EventBits_t connec
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA) );
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config) );
+
+    // Static addressing (Settings -> Network -> Addressing). DHCP stays the
+    // default; a static configuration must be applied before esp_wifi_start()
+    // so the DHCP client never races the manual address.
+    if (!settings->wifi_dhcp && settings->wifi_ip[0]) {
+        esp_netif_ip_info_t ip = {0};
+        ip.ip.addr = esp_ip4addr_aton(settings->wifi_ip);
+        ip.netmask.addr = esp_ip4addr_aton(settings->wifi_netmask);
+        ip.gw.addr = esp_ip4addr_aton(settings->wifi_gw);
+        if (ip.ip.addr && ip.netmask.addr) {
+            esp_err_t err = esp_netif_dhcpc_stop(sta_netif);
+            if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {
+                ESP_LOGW(TAG, "dhcpc_stop failed: %s", esp_err_to_name(err));
+            }
+            err = esp_netif_set_ip_info(sta_netif, &ip);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "set_ip_info failed: %s", esp_err_to_name(err));
+            }
+            if (settings->wifi_dns[0]) {
+                esp_netif_dns_info_t dns = {0};
+                dns.ip.type = ESP_IPADDR_TYPE_V4;
+                dns.ip.u_addr.ip4.addr = esp_ip4addr_aton(settings->wifi_dns);
+                esp_netif_set_dns_info(sta_netif, ESP_NETIF_DNS_MAIN, &dns);
+            }
+            ESP_LOGI(TAG, "Static IP %s mask %s gw %s", settings->wifi_ip,
+                     settings->wifi_netmask, settings->wifi_gw);
+        } else {
+            ESP_LOGW(TAG, "Invalid static IP configuration; using DHCP");
+        }
+    }
+
     ESP_ERROR_CHECK(esp_wifi_start() );
 }
 

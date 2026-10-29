@@ -16,6 +16,7 @@ idf_component_register(
         "codec_driver.c"
         "ui_controller.c"
         "matrix_status.c"
+        "led_status.c"
         "display.c"
     INCLUDE_DIRS
         "."
@@ -32,6 +33,7 @@ idf_component_register(
         esp_timer
         driver
         esp_driver_i2s
+        esp_driver_rmt
         # Project components (../components/*)
         config_store
         eth_manager

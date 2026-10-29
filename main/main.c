@@ -18,6 +18,7 @@
 #include "sip_client.h"
 #include "audio_pipeline.h"
 #include "app_config.h" // Include configurations
+#include "led_status.h"
 #include "matrix_status.h"
 #include "ui_controller.h" // Include UI Controller
 #include "config_manager.h"
@@ -63,10 +64,27 @@ static bool build_matrix_cfg(matrix_cfg_t *out) {
         out->layout = MX_LAYOUT_2D;
         out->width = g_app_settings.matrix_width ? g_app_settings.matrix_width : 64;
         out->height = g_app_settings.matrix_height ? g_app_settings.matrix_height : 32;
+        out->scan = g_app_settings.matrix_scan;
+        out->pixel_aspect = g_app_settings.matrix_pixel_aspect;
+        out->chain_reversed = false;
         const int8_t pins[14] = {
             hw.pin_mx_r1, hw.pin_mx_g1, hw.pin_mx_b1, hw.pin_mx_r2, hw.pin_mx_g2,
             hw.pin_mx_b2, hw.pin_mx_a, hw.pin_mx_b, hw.pin_mx_c, hw.pin_mx_d,
             hw.pin_mx_e, hw.pin_mx_clk, hw.pin_mx_lat, hw.pin_mx_oe,
+        };
+        memcpy(out->pins, pins, sizeof(pins));
+    } else if (g_app_settings.matrix_type == MATRIX_TYPE_HUB12) {
+        out->type = MX_HUB12;
+        out->layout = MX_LAYOUT_2D;
+        out->width = g_app_settings.matrix_width ? g_app_settings.matrix_width : 32;
+        out->height = g_app_settings.matrix_height ? g_app_settings.matrix_height : 16;
+        out->scan = g_app_settings.matrix_scan ? g_app_settings.matrix_scan : 1; // default 1/4
+        out->pixel_aspect = g_app_settings.matrix_pixel_aspect;
+        out->chain_reversed = false;
+        const int8_t pins[14] = {
+            hw.pin_mx_r1, hw.pin_mx_g1, hw.pin_mx_b1, hw.pin_mx_r2, hw.pin_mx_g2,
+            hw.pin_mx_b2, hw.pin_mx_a, hw.pin_mx_b, -1, -1, -1,
+            hw.pin_mx_clk, hw.pin_mx_lat, hw.pin_mx_oe,
         };
         memcpy(out->pins, pins, sizeof(pins));
     } else if (g_app_settings.matrix_type == MATRIX_TYPE_MAX7219) {
@@ -261,12 +279,14 @@ void app_main(void) {
     // early-return so the ticker works in captive-portal mode too.
     if (g_matrix_display) {
         matrix_status_start(g_matrix_display, app_event_group, &g_sip_client, &g_app_settings);
+        led_status_start(app_event_group, &g_sip_client, &g_app_settings);
     }
 
     if (net_is_setup_ap()) {
         ESP_LOGI(TAG, "Running in AP Mode (Captive Portal). SIP disabled.");
         display_update_status("192.168.4.1", "AP Setup Mode", "ESP-SIP-Setup");
         ui_controller_init(NULL, &g_app_settings);
+        led_status_start(app_event_group, NULL, &g_app_settings);
         return; // Stop initialization here
     }
 

@@ -330,6 +330,7 @@
 #define MATRIX_TYPE_HUB75    1
 #define MATRIX_TYPE_MAX7219  2
 #define MATRIX_TYPE_PREVIEW  3
+#define MATRIX_TYPE_HUB12    4
 
 #define MATRIX_COLOR_MONO_R  0
 #define MATRIX_COLOR_MONO_G  1
@@ -404,7 +405,10 @@
 
 // --- Time / NTP (for the on-screen clock themes) ---
 #define NTP_SERVER             "pool.ntp.org"
-#define TIMEZONE               "GMT0"   // POSIX TZ, e.g. "MSK-3", "GMT0", "EST5EDT,M3.2.0,M11.1.0"
+// POSIX TZ (sign is inverted: local = UTC - offset). Default Asia/Kathmandu
+// (Nepal, UTC+5:45) -> "NPT-5:45". Other examples: "MSK-3" (UTC+3),
+// "IST-5:30" (India), "GMT0", "EST5EDT,M3.2.0,M11.1.0" (US Eastern with DST).
+#define TIMEZONE               "NPT-5:45"
 
 // --- Web interface login ---
 // The web interface always starts with a login page ("/login"); every page

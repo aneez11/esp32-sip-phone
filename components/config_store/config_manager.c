@@ -24,6 +24,11 @@ static void apply_defaults(app_settings_t *settings) {
     memset(settings, 0, sizeof(*settings));
     snprintf(settings->wifi_ssid, sizeof(settings->wifi_ssid), "%s", WIFI_SSID);
     snprintf(settings->wifi_password, sizeof(settings->wifi_password), "%s", WIFI_PASSWORD);
+    settings->wifi_dhcp = 1;             // DHCP by default
+    settings->wifi_ip[0] = '\0';
+    settings->wifi_netmask[0] = '\0';
+    settings->wifi_gw[0] = '\0';
+    settings->wifi_dns[0] = '\0';
     snprintf(settings->sip_server, sizeof(settings->sip_server), "%s", SIP_SERVER_IP);
     snprintf(settings->sip_user, sizeof(settings->sip_user), "%s", SIP_USER);
     snprintf(settings->sip_password, sizeof(settings->sip_password), "%s", SIP_PASSWORD);
@@ -49,6 +54,28 @@ static void apply_defaults(app_settings_t *settings) {
     settings->matrix_channels = MATRIX_COLOR_RGB;
     settings->matrix_layout = MATRIX_LAYOUT_2D;
     settings->matrix_brightness = MATRIX_BRIGHTNESS_DEFAULT;
+    settings->matrix_scan = 0;
+    settings->matrix_pixel_aspect = 0;
+    settings->line_count = 1;
+    for (int i = 0; i < 4; i++) {
+        settings->line_src[i] = 0;       // blank
+        settings->line_scale[i] = 0;     // auto
+        settings->line_span[i] = 1;
+        settings->line_align[i] = 0;     // left
+        settings->line_scroll[i] = 1;    // scroll when overflowing
+        settings->ss_text[i][0] = '\0';
+    }
+    snprintf(settings->ss_text[0], sizeof(settings->ss_text[0]), "SIP PHONE");
+    settings->ss_enabled = 1;
+    settings->ss_mode = 1;        // rotate
+    settings->ss_mask = 0x1F;     // first five effects
+    settings->ss_speed = 1;       // normal
+    settings->ss_idle_s = 30;
+    settings->ss_bright = 0;      // follow main
+    settings->clock_mode = 0;     // off by default
+    settings->clock_12h = 0;      // 24-hour
+    settings->clock_date = 1;     // show date on tall panels
+    settings->clock_offset_min = 0;
     settings->matrix_modules = MATRIX_MODULES_DEFAULT;
     settings->matrix_width = 64;
     settings->matrix_height = 32;
@@ -72,6 +99,14 @@ esp_err_t config_manager_load(app_settings_t *settings) {
 
     get_str_or_keep(my_handle, "wifi_ssid",  settings->wifi_ssid,   sizeof(settings->wifi_ssid));
     get_str_or_keep(my_handle, "wifi_pass",  settings->wifi_password, sizeof(settings->wifi_password));
+    uint8_t wifi_dhcp = 1;
+    if (nvs_get_u8(my_handle, "wifi_dhcp", &wifi_dhcp) == ESP_OK) {
+        settings->wifi_dhcp = wifi_dhcp ? 1 : 0;
+    }
+    get_str_or_keep(my_handle, "wifi_ip",   settings->wifi_ip,      sizeof(settings->wifi_ip));
+    get_str_or_keep(my_handle, "wifi_mask", settings->wifi_netmask, sizeof(settings->wifi_netmask));
+    get_str_or_keep(my_handle, "wifi_gw",   settings->wifi_gw,      sizeof(settings->wifi_gw));
+    get_str_or_keep(my_handle, "wifi_dns",  settings->wifi_dns,     sizeof(settings->wifi_dns));
     get_str_or_keep(my_handle, "sip_server", settings->sip_server,  sizeof(settings->sip_server));
     get_str_or_keep(my_handle, "sip_user",   settings->sip_user,    sizeof(settings->sip_user));
     get_str_or_keep(my_handle, "sip_pass",   settings->sip_password, sizeof(settings->sip_password));
@@ -120,7 +155,7 @@ esp_err_t config_manager_load(app_settings_t *settings) {
     uint8_t u8 = 0;
     if (nvs_get_u8(my_handle, "disp_mode", &u8) == ESP_OK && u8 <= DISPLAY_MODE_ALL)
         settings->display_mode = u8;
-    if (nvs_get_u8(my_handle, "mx_type", &u8) == ESP_OK && u8 <= MATRIX_TYPE_PREVIEW)
+    if (nvs_get_u8(my_handle, "mx_type", &u8) == ESP_OK && u8 <= MATRIX_TYPE_HUB12)
         settings->matrix_type = u8;
     if (nvs_get_u8(my_handle, "mx_chan", &u8) == ESP_OK && u8 <= MATRIX_COLOR_RGB)
         settings->matrix_channels = u8;
@@ -128,6 +163,63 @@ esp_err_t config_manager_load(app_settings_t *settings) {
         settings->matrix_layout = u8;
     if (nvs_get_u8(my_handle, "mx_bright", &u8) == ESP_OK && u8 <= 100)
         settings->matrix_brightness = u8;
+    if (nvs_get_u8(my_handle, "mx_scan", &u8) == ESP_OK && u8 <= 4)
+        settings->matrix_scan = u8;
+    if (nvs_get_u8(my_handle, "mx_par", &u8) == ESP_OK && u8 <= 2)
+        settings->matrix_pixel_aspect = u8;
+
+    // Multi-line layout
+    if (nvs_get_u8(my_handle, "ln_cnt", &u8) == ESP_OK && u8 >= 1 && u8 <= 4)
+        settings->line_count = u8;
+    for (int i = 0; i < 4; i++) {
+        char key[8];
+        snprintf(key, sizeof(key), "ln_s%d", i);
+        if (nvs_get_u8(my_handle, key, &u8) == ESP_OK && u8 <= 15)
+            settings->line_src[i] = u8;
+        snprintf(key, sizeof(key), "ln_sc%d", i);
+        if (nvs_get_u8(my_handle, key, &u8) == ESP_OK && u8 <= 4)
+            settings->line_scale[i] = u8;
+        snprintf(key, sizeof(key), "ln_sp%d", i);
+        if (nvs_get_u8(my_handle, key, &u8) == ESP_OK && u8 >= 1 && u8 <= 4)
+            settings->line_span[i] = u8;
+        snprintf(key, sizeof(key), "ln_al%d", i);
+        if (nvs_get_u8(my_handle, key, &u8) == ESP_OK && u8 <= 2)
+            settings->line_align[i] = u8;
+        snprintf(key, sizeof(key), "ln_sr%d", i);
+        if (nvs_get_u8(my_handle, key, &u8) == ESP_OK)
+            settings->line_scroll[i] = u8 ? 1 : 0;
+    }
+    // Screensaver
+    if (nvs_get_u8(my_handle, "ss_en", &u8) == ESP_OK)
+        settings->ss_enabled = u8 ? 1 : 0;
+    if (nvs_get_u8(my_handle, "ss_mode", &u8) == ESP_OK && u8 <= 3)
+        settings->ss_mode = u8;
+    if (nvs_get_u8(my_handle, "ss_mask", &u8) == ESP_OK)
+        settings->ss_mask = u8;
+    for (int i = 0; i < 4; i++) {
+        char key[8];
+        snprintf(key, sizeof(key), "ss_t%d", i);
+        get_str_or_keep(my_handle, key, settings->ss_text[i], sizeof(settings->ss_text[i]));
+    }
+    if (nvs_get_u8(my_handle, "ss_spd", &u8) == ESP_OK && u8 <= 2)
+        settings->ss_speed = u8;
+    if (nvs_get_u8(my_handle, "ss_idle", &u8) == ESP_OK)
+        settings->ss_idle_s = u8;
+    if (nvs_get_u8(my_handle, "ss_br", &u8) == ESP_OK && u8 <= 100)
+        settings->ss_bright = u8;
+
+    // Clock
+    if (nvs_get_u8(my_handle, "clk_mode", &u8) == ESP_OK && u8 <= 1)
+        settings->clock_mode = u8;
+    if (nvs_get_u8(my_handle, "clk_12h", &u8) == ESP_OK)
+        settings->clock_12h = u8 ? 1 : 0;
+    if (nvs_get_u8(my_handle, "clk_date", &u8) == ESP_OK)
+        settings->clock_date = u8 ? 1 : 0;
+    int16_t i16 = 0;
+    if (nvs_get_i16(my_handle, "clk_off", &i16) == ESP_OK &&
+        i16 >= -1440 && i16 <= 1440) {
+        settings->clock_offset_min = i16;
+    }
     if (nvs_get_u8(my_handle, "mx_mod", &u8) == ESP_OK && u8 > 0 && u8 <= 8)
         settings->matrix_modules = u8;
     uint16_t u16 = 0;
@@ -148,6 +240,11 @@ esp_err_t config_manager_save(const app_settings_t *settings) {
 
     nvs_set_str(my_handle, "wifi_ssid", settings->wifi_ssid);
     nvs_set_str(my_handle, "wifi_pass", settings->wifi_password);
+    nvs_set_u8(my_handle, "wifi_dhcp", settings->wifi_dhcp);
+    nvs_set_str(my_handle, "wifi_ip", settings->wifi_ip);
+    nvs_set_str(my_handle, "wifi_mask", settings->wifi_netmask);
+    nvs_set_str(my_handle, "wifi_gw", settings->wifi_gw);
+    nvs_set_str(my_handle, "wifi_dns", settings->wifi_dns);
     nvs_set_str(my_handle, "sip_server", settings->sip_server);
     nvs_set_str(my_handle, "sip_user", settings->sip_user);
     nvs_set_str(my_handle, "sip_pass", settings->sip_password);
@@ -173,6 +270,37 @@ esp_err_t config_manager_save(const app_settings_t *settings) {
     nvs_set_u8(my_handle, "mx_chan", settings->matrix_channels);
     nvs_set_u8(my_handle, "mx_lay", settings->matrix_layout);
     nvs_set_u8(my_handle, "mx_bright", settings->matrix_brightness);
+    nvs_set_u8(my_handle, "mx_scan", settings->matrix_scan);
+    nvs_set_u8(my_handle, "mx_par", settings->matrix_pixel_aspect);
+    nvs_set_u8(my_handle, "ln_cnt", settings->line_count);
+    for (int i = 0; i < 4; i++) {
+        char key[8];
+        snprintf(key, sizeof(key), "ln_s%d", i);
+        nvs_set_u8(my_handle, key, settings->line_src[i]);
+        snprintf(key, sizeof(key), "ln_sc%d", i);
+        nvs_set_u8(my_handle, key, settings->line_scale[i]);
+        snprintf(key, sizeof(key), "ln_sp%d", i);
+        nvs_set_u8(my_handle, key, settings->line_span[i]);
+        snprintf(key, sizeof(key), "ln_al%d", i);
+        nvs_set_u8(my_handle, key, settings->line_align[i]);
+        snprintf(key, sizeof(key), "ln_sr%d", i);
+        nvs_set_u8(my_handle, key, settings->line_scroll[i]);
+    }
+    nvs_set_u8(my_handle, "ss_en", settings->ss_enabled);
+    nvs_set_u8(my_handle, "ss_mode", settings->ss_mode);
+    nvs_set_u8(my_handle, "ss_mask", settings->ss_mask);
+    for (int i = 0; i < 4; i++) {
+        char key[8];
+        snprintf(key, sizeof(key), "ss_t%d", i);
+        nvs_set_str(my_handle, key, settings->ss_text[i]);
+    }
+    nvs_set_u8(my_handle, "ss_spd", settings->ss_speed);
+    nvs_set_u8(my_handle, "ss_idle", settings->ss_idle_s);
+    nvs_set_u8(my_handle, "ss_br", settings->ss_bright);
+    nvs_set_u8(my_handle, "clk_mode", settings->clock_mode);
+    nvs_set_u8(my_handle, "clk_12h", settings->clock_12h);
+    nvs_set_u8(my_handle, "clk_date", settings->clock_date);
+    nvs_set_i16(my_handle, "clk_off", settings->clock_offset_min);
     nvs_set_u8(my_handle, "mx_mod", settings->matrix_modules);
     nvs_set_u16(my_handle, "mx_w", settings->matrix_width);
     nvs_set_u16(my_handle, "mx_h", settings->matrix_height);

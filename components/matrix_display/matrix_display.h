@@ -24,10 +24,11 @@ extern "C" {
 #endif
 
 typedef enum {
-    MX_NONE = 0,
-    MX_HUB75,
-    MX_MAX7219,
-    MX_PREVIEW,
+MX_NONE = 0,
+MX_HUB75,
+MX_HUB12,
+MX_MAX7219,
+MX_PREVIEW,
 } matrix_type_t;
 
 typedef enum {
@@ -53,6 +54,8 @@ typedef struct {
     uint16_t        height;     // HUB75: 32  MAX7219: 8
     uint8_t         modules;    // MAX7219 chain length
     uint8_t         brightness; // 0-100
+    uint8_t         scan;       // 0=auto 1=1/4 2=1/8 3=1/16 4=1/32 (HUB only)
+    uint8_t         pixel_aspect; // 0=1:1 1=2:1 wide 2=1:2 tall (HUB only)
     // MAX7219 only: the module wired to the ESP32 is the rightmost panel, so
     // screen x=0 is the farthest module. Costs nothing on other backends.
     bool            chain_reversed;
@@ -81,6 +84,13 @@ void matrix_draw_text_center(matrix_display_handle_t h, int y,
                              const char *text, uint8_t scale, uint32_t rgb);
 int  matrix_draw_number(matrix_display_handle_t h, int x, int y,
                         int value, uint8_t scale, uint32_t rgb);
+
+// Text with a horizontal stretch (1 = normal, 2 = double-wide glyph columns).
+// Used to compensate for non-square pixels (see matrix_cfg_t.pixel_aspect).
+int  matrix_draw_text_stretch(matrix_display_handle_t h, int x, int y,
+                              const char *text, uint8_t scale, uint32_t rgb,
+                              uint8_t x_mul);
+int  matrix_text_width_stretch(const char *text, uint8_t scale, uint8_t x_mul);
 
 // Single pixel (for status animations / level meters). Clipped, mutex-protected.
 void matrix_set_pixel(matrix_display_handle_t h, int x, int y, uint32_t rgb);
